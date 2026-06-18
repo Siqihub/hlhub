@@ -131,7 +131,12 @@ def login(profile_dir: Path, timeout_ms: int = 300_000) -> None:
 
 
 @contextmanager
-def open_chat(profile_dir: Path, timeout_ms: int = 30_000, headless: bool = True):
+def open_chat(
+    profile_dir: Path,
+    timeout_ms: int = 30_000,
+    headless: bool = True,
+    artifact_dir: Path | None = None,
+):
     playwright = sync_playwright().start()
     context = playwright.chromium.launch_persistent_context(
         str(profile_dir), headless=headless
@@ -141,10 +146,14 @@ def open_chat(profile_dir: Path, timeout_ms: int = 30_000, headless: bool = True
     try:
         page.goto(CHAT_URL)
         if page.locator(DOUYIN_SELECTORS.verification_marker).count():
+            if artifact_dir:
+                DouyinChat(page, DOUYIN_SELECTORS, artifact_dir).screenshot("authentication")
             raise AuthenticationError("login expired or security verification required")
         try:
             page.locator(DOUYIN_SELECTORS.login_marker).wait_for()
         except PlaywrightTimeoutError as exc:
+            if artifact_dir:
+                DouyinChat(page, DOUYIN_SELECTORS, artifact_dir).screenshot("authentication")
             raise AuthenticationError("Douyin login is unavailable; run autody login") from exc
         yield page
     finally:
