@@ -53,19 +53,26 @@ DOUYIN_SELECTORS = ChatSelectors(
     conversation=".conversationConversationItemwrapper",
     conversation_name=".conversationConversationItemtitle",
     conversation_list=".conversationConversationListwrapper",
-    header_name="[class*='messageHeader'] [class*='title'], [class*='chatHeader'] [class*='title']",
+    header_name=".RightPanelHeadertitle",
     input=".messageEditorimChatEditorContainer",
-    message_text=".MessageItemTextisFromMe .TextMessageTextpureText",
+    message_text=".componentsRightPanelwrapper .MessageBoxContentactiveClickArea .MessageItemTextisFromMe .TextMessageTextpureText",
     login_marker=".conversationConversationListwrapper",
     verification_marker="text=/安全验证|扫码登录|登录后即可聊天/",
 )
 
 
 class DouyinChat:
-    def __init__(self, page: Page, selectors: ChatSelectors, artifact_dir: Path):
+    def __init__(
+        self,
+        page: Page,
+        selectors: ChatSelectors,
+        artifact_dir: Path,
+        confirmation_delay_ms: int = 2_000,
+    ):
         self.page = page
         self.selectors = selectors
         self.artifact_dir = artifact_dir
+        self.confirmation_delay_ms = confirmation_delay_ms
 
     def _message_locator(self, message: str):
         return self.page.locator(self.selectors.message_text).filter(
@@ -89,15 +96,10 @@ class DouyinChat:
             if count > 1:
                 raise RuntimeError(f"ambiguous target: {target}")
             matches.first.click()
-            header = self.page.locator(self.selectors.header_name)
-            if header.count() and header.first.is_visible():
-                confirmed_name = header.first.inner_text().strip()
-            elif self.page.get_by_text(target, exact=True).count() >= 2:
-                confirmed_name = target
-            else:
-                raise PageChangedError("conversation header could not be confirmed")
-            if confirmed_name != target:
-                raise RuntimeError("conversation header mismatch")
+            header = self.page.locator(self.selectors.header_name).filter(
+                has_text=re.compile(rf"^{re.escape(target)}$")
+            )
+            header.first.wait_for(state="visible")
             if self._message_exists(message):
                 return
             editor_container = self.page.locator(self.selectors.input)
@@ -109,6 +111,9 @@ class DouyinChat:
             editor.fill(message)
             editor.press("Enter")
             self._message_locator(message).last.wait_for()
+            self.page.wait_for_timeout(self.confirmation_delay_ms)
+            if not self._message_exists(message):
+                raise RuntimeError("sent message did not persist")
         except RuntimeError:
             self.screenshot("send-error")
             raise
