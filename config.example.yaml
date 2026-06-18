@@ -1,0 +1,10 @@
+targets:
+  - name: "好友备注名"
+messages_file: messages.example.txt
+profile_dir: data/browser-profile
+state_file: data/state.json
+lock_file: data/autody.lock
+artifact_dir: data/artifacts
+retry_count: 3
+timeout_ms: 30000
+headless: true

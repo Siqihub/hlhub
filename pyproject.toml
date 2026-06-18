@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autody"
+version = "0.1.0"
+description = "Windows-local daily Douyin spark message automation"
+requires-python = ">=3.11"
+dependencies = [
+  "playwright>=1.52,<2",
+  "pydantic>=2.11,<3",
+  "PyYAML>=6,<7",
+  "typer>=0.16,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9", "pytest-playwright>=0.7,<1"]
+
+[project.scripts]
+autody = "autody.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autody"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
