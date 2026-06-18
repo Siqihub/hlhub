@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<body>
+  <main data-e2e="chat-app">
+    <button data-e2e="conversation-item"><span data-e2e="conversation-name">小明</span></button>
+    <h2 data-e2e="chat-header-name">小明</h2>
+    <div data-e2e="chat-input" contenteditable="true"></div>
+    <div data-e2e="message-list"></div>
+  </main>
+  <script>
+    document.querySelector('[data-e2e="chat-input"]').addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const item = document.createElement('p');
+        item.dataset.e2e = 'message-text';
+        item.textContent = event.target.textContent;
+        document.querySelector('[data-e2e="message-list"]').append(item);
+        event.target.textContent = '';
+      }
+    });
+  </script>
+</body>
+</html>
