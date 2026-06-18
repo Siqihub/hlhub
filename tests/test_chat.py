@@ -49,3 +49,14 @@ def test_semantic_text_fallback_handles_unknown_header_and_message_classes(page,
     chat = DouyinChat(page, selectors, tmp_path)
     chat.send("小明", "早安")
     assert page.get_by_text("早安", exact=True).count() == 1
+
+
+def test_editor_container_uses_contenteditable_descendant(page, tmp_path):
+    page.goto((Path("tests/fixtures/chat.html").resolve()).as_uri())
+    page.locator('[data-e2e="chat-input"]').evaluate(
+        "el => { const wrapper=document.createElement('div'); wrapper.className='editor-wrapper'; el.parentNode.insertBefore(wrapper, el); wrapper.append(el); }"
+    )
+    selectors = replace(ChatSelectors.test_defaults(), input=".editor-wrapper")
+    chat = DouyinChat(page, selectors, tmp_path)
+    chat.send("小明", "早安")
+    assert page.get_by_text("早安", exact=True).count() == 1

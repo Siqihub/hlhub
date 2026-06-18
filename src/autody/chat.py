@@ -99,8 +99,12 @@ class DouyinChat:
                 raise RuntimeError("conversation header mismatch")
             if self._message_exists(message):
                 return
-            editor = self.page.locator(self.selectors.input)
-            editor.wait_for(state="visible")
+            editor_container = self.page.locator(self.selectors.input)
+            editor_container.wait_for(state="visible")
+            editable_child = editor_container.locator(
+                "[contenteditable], textarea, input"
+            )
+            editor = editable_child.last if editable_child.count() else editor_container
             editor.fill(message)
             editor.press("Enter")
             self.page.get_by_text(message, exact=True).last.wait_for()

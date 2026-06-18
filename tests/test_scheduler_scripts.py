@@ -9,6 +9,8 @@ def test_install_script_has_required_scheduler_contract():
         "IgnoreNew",
         "autody.exe",
         "Register-ScheduledTask",
+        "-ErrorAction Stop",
+        "Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop",
     ]:
         assert token in text
 
