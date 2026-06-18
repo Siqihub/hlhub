@@ -68,10 +68,11 @@ class DouyinChat:
         self.artifact_dir = artifact_dir
 
     def _message_exists(self, message: str) -> bool:
-        return any(
+        selector_match = any(
             text.strip() == message
             for text in self.page.locator(self.selectors.message_text).all_inner_texts()
         )
+        return selector_match or self.page.get_by_text(message, exact=True).count() > 0
 
     def send(self, target: str, message: str) -> None:
         try:
@@ -88,8 +89,13 @@ class DouyinChat:
                 raise RuntimeError(f"ambiguous target: {target}")
             matches.first.click()
             header = self.page.locator(self.selectors.header_name)
-            header.wait_for(state="visible")
-            if header.first.inner_text().strip() != target:
+            if header.count() and header.first.is_visible():
+                confirmed_name = header.first.inner_text().strip()
+            elif self.page.get_by_text(target, exact=True).count() >= 2:
+                confirmed_name = target
+            else:
+                raise PageChangedError("conversation header could not be confirmed")
+            if confirmed_name != target:
                 raise RuntimeError("conversation header mismatch")
             if self._message_exists(message):
                 return
@@ -97,10 +103,7 @@ class DouyinChat:
             editor.wait_for(state="visible")
             editor.fill(message)
             editor.press("Enter")
-            self.page.wait_for_function(
-                "([selector, expected]) => [...document.querySelectorAll(selector)].some(el => el.textContent.trim() === expected)",
-                arg=[self.selectors.message_text, message],
-            )
+            self.page.get_by_text(message, exact=True).last.wait_for()
         except RuntimeError:
             self.screenshot("send-error")
             raise
