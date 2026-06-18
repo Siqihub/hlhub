@@ -12,8 +12,12 @@
       if (event.key === 'Enter') {
         event.preventDefault();
         const item = document.createElement('p');
-        item.dataset.e2e = 'message-text';
-        item.textContent = event.target.textContent;
+        item.className = 'MessageItemTextcontainer MessageItemTextisFromMe';
+        const text = document.createElement('span');
+        text.className = 'TextMessageTextpureText';
+        text.dataset.e2e = 'message-text';
+        text.textContent = event.target.textContent;
+        item.append(text);
         document.querySelector('[data-e2e="message-list"]').append(item);
         event.target.textContent = '';
       }

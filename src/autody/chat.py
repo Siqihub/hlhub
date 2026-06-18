@@ -55,7 +55,7 @@ DOUYIN_SELECTORS = ChatSelectors(
     conversation_list=".conversationConversationListwrapper",
     header_name="[class*='messageHeader'] [class*='title'], [class*='chatHeader'] [class*='title']",
     input=".messageEditorimChatEditorContainer",
-    message_text="[class*='messageItem'] [class*='text'], [class*='messageContent']",
+    message_text=".MessageItemTextisFromMe .TextMessageTextpureText",
     login_marker=".conversationConversationListwrapper",
     verification_marker="text=/安全验证|扫码登录|登录后即可聊天/",
 )
@@ -67,12 +67,13 @@ class DouyinChat:
         self.selectors = selectors
         self.artifact_dir = artifact_dir
 
-    def _message_exists(self, message: str) -> bool:
-        selector_match = any(
-            text.strip() == message
-            for text in self.page.locator(self.selectors.message_text).all_inner_texts()
+    def _message_locator(self, message: str):
+        return self.page.locator(self.selectors.message_text).filter(
+            has_text=re.compile(rf"^{re.escape(message)}$")
         )
-        return selector_match or self.page.get_by_text(message, exact=True).count() > 0
+
+    def _message_exists(self, message: str) -> bool:
+        return self._message_locator(message).count() > 0
 
     def send(self, target: str, message: str) -> None:
         try:
@@ -107,7 +108,7 @@ class DouyinChat:
             editor = editable_child.last if editable_child.count() else editor_container
             editor.fill(message)
             editor.press("Enter")
-            self.page.get_by_text(message, exact=True).last.wait_for()
+            self._message_locator(message).last.wait_for()
         except RuntimeError:
             self.screenshot("send-error")
             raise
