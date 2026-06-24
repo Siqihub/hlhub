@@ -19,4 +19,20 @@ def test_remove_script_uses_same_task_name():
     install = Path("scripts/install-task.ps1").read_text(encoding="utf-8-sig")
     remove = Path("scripts/remove-task.ps1").read_text(encoding="utf-8-sig")
     assert '$TaskName = "AutoDy-DailySpark"' in install
-    assert '$TaskName = "AutoDy-DailySpark"' in remove
+    assert '"AutoDy-DailySpark"' in remove
+    assert '"AutoDy-Health-Daily"' in remove
+    assert '"AutoDy-Health-Weekly"' in remove
+
+
+def test_scheduler_wrappers_log_and_notify():
+    run = Path("scripts/run-scheduled.ps1").read_text(encoding="utf-8-sig")
+    health = Path("scripts/health-check.ps1").read_text(encoding="utf-8-sig")
+    install = Path("scripts/install-task.ps1").read_text(encoding="utf-8-sig")
+    for token in ["scheduler.log", "AutoDy-需要处理.txt", "MessageBox"]:
+        assert token in run
+    for token in ["health-check", "AutoDy-重新登录.cmd", "MessageBox"]:
+        assert token in health
+    assert "RedirectStandardOutput" in run
+    assert "RedirectStandardOutput" in health
+    for token in ["AutoDy-Health-Daily", "07:20", "AutoDy-Health-Weekly", "20:00"]:
+        assert token in install

@@ -1,9 +1,9 @@
-$ErrorActionPreference = "Stop"
-$TaskName = "AutoDy-DailySpark"
+﻿$ErrorActionPreference = "Stop"
+$TaskNames = @("AutoDy-DailySpark", "AutoDy-Health-Daily", "AutoDy-Health-Weekly")
 
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    Write-Host "Scheduled task $TaskName removed."
-} else {
-    Write-Host "Scheduled task $TaskName is not installed."
+foreach ($TaskName in $TaskNames) {
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        Write-Host "Scheduled task $TaskName removed."
+    }
 }

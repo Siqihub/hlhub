@@ -1,0 +1,54 @@
+﻿$ErrorActionPreference = "Stop"
+$env:PYTHONUTF8 = "1"
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$Exe = Join-Path $Root ".venv\Scripts\autody.exe"
+$Config = Join-Path $Root "config.yaml"
+$LogDir = Join-Path $Root "data\logs"
+$Log = Join-Path $LogDir "scheduler.log"
+$Desktop = [Environment]::GetFolderPath("Desktop")
+$Alert = Join-Path $Desktop "AutoDy-需要处理.txt"
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+$started = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+"[$started] 开始每日发送任务" | Add-Content -Encoding UTF8 $Log
+$stdout = Join-Path $env:TEMP "autody-run-stdout-$PID.log"
+$stderr = Join-Path $env:TEMP "autody-run-stderr-$PID.log"
+$process = Start-Process `
+    -FilePath $Exe `
+    -ArgumentList @("run", "--config", "`"$Config`"") `
+    -WorkingDirectory $Root `
+    -Wait `
+    -PassThru `
+    -NoNewWindow `
+    -RedirectStandardOutput $stdout `
+    -RedirectStandardError $stderr
+foreach ($path in @($stdout, $stderr)) {
+    if (Test-Path $path) {
+        Get-Content -Raw -Encoding UTF8 $path | Add-Content -Encoding UTF8 $Log
+        Remove-Item -LiteralPath $path -Force
+    }
+}
+$exitCode = $process.ExitCode
+
+if ($exitCode -ne 0) {
+    $message = @"
+AutoDy 每日发送任务失败。
+时间：$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+退出码：$exitCode
+
+请查看：
+$Log
+
+如果提示登录失效，请双击桌面的 AutoDy-重新登录.cmd。
+"@
+    $message | Set-Content -Encoding UTF8 $Alert
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show(
+        $message,
+        "AutoDy 需要处理",
+        "OK",
+        "Warning"
+    ) | Out-Null
+}
+
+exit $exitCode

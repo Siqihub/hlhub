@@ -91,3 +91,26 @@ def test_send_rejects_optimistic_bubble_that_disappears(page, tmp_path):
     )
     with pytest.raises(RuntimeError, match="did not persist"):
         chat.send("小明", "早安")
+
+
+def test_find_target_scrolls_conversation_list(page, tmp_path):
+    page.goto((Path("tests/fixtures/chat.html").resolve()).as_uri())
+    page.locator('[data-e2e="conversation-item"]').evaluate("el => el.remove()")
+    page.locator('[data-e2e="chat-app"]').evaluate(
+        """el => {
+          el.style.height='100px'; el.style.overflow='auto';
+          const spacer=document.createElement('div'); spacer.style.height='500px'; el.prepend(spacer);
+          el.addEventListener('scroll', () => {
+            if (el.querySelector('[data-late-target]')) return;
+            const button=document.createElement('button');
+            button.dataset.e2e='conversation-item'; button.dataset.lateTarget='1';
+            button.innerHTML='<span data-e2e="conversation-name">小明</span>';
+            el.append(button);
+          });
+        }"""
+    )
+    chat = DouyinChat(
+        page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=0
+    )
+    chat.send("小明", "早安")
+    assert page.locator('[data-e2e="message-text"]', has_text="早安").count() == 1

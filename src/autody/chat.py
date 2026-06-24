@@ -82,15 +82,41 @@ class DouyinChat:
     def _message_exists(self, message: str) -> bool:
         return self._message_locator(message).count() > 0
 
+    def _find_conversation(self, target: str):
+        conversations = self.page.locator(self.selectors.conversation)
+        names = self.page.locator(
+            self.selectors.conversation_name,
+            has_text=re.compile(rf"^{re.escape(target)}$"),
+        )
+        matches = conversations.filter(has=names)
+        scrollable = self.page.locator(self.selectors.conversation_list)
+        if scrollable.count():
+            scrollable.first.evaluate("el => el.scrollTop = 0")
+        for _ in range(50):
+            count = matches.count()
+            if count:
+                return matches, count
+            if not scrollable.count():
+                break
+            position = scrollable.first.evaluate(
+                """el => ({
+                    before: el.scrollTop,
+                    maximum: Math.max(0, el.scrollHeight - el.clientHeight),
+                    step: Math.max(200, Math.floor(el.clientHeight * 0.7))
+                })"""
+            )
+            if position["before"] >= position["maximum"]:
+                break
+            scrollable.first.evaluate(
+                "(el, step) => { el.scrollTop += step; el.dispatchEvent(new Event('scroll')); }",
+                position["step"],
+            )
+            self.page.wait_for_timeout(250)
+        return matches, matches.count()
+
     def send(self, target: str, message: str) -> None:
         try:
-            matches = self.page.locator(self.selectors.conversation).filter(
-                has=self.page.locator(
-                    self.selectors.conversation_name,
-                    has_text=re.compile(rf"^{re.escape(target)}$"),
-                )
-            )
-            count = matches.count()
+            matches, count = self._find_conversation(target)
             if count == 0:
                 raise RuntimeError(f"target not found: {target}")
             if count > 1:

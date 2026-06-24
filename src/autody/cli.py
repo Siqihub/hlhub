@@ -48,6 +48,27 @@ def login(config: Path = typer.Option(Path("config.yaml"), "--config")):
     typer.echo("登录状态已保存。")
 
 
+@app.command("health-check")
+def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
+    loaded = load_config(config)
+    setup_logging(loaded)
+    try:
+        with open_chat(
+            loaded.profile_dir,
+            loaded.timeout_ms,
+            True,
+            loaded.artifact_dir,
+        ):
+            logging.info("登录状态和抖音聊天页正常。")
+    except FatalChatError as exc:
+        logging.error("登录健康检查失败：%s", exc)
+        raise typer.Exit(3) from exc
+    except Exception:
+        logging.exception("登录健康检查发生未捕获异常。")
+        raise typer.Exit(1)
+    typer.echo("登录状态正常，聊天页可用。")
+
+
 @app.command()
 def run(config: Path = typer.Option(Path("config.yaml"), "--config")):
     loaded = load_config(config)
@@ -66,6 +87,9 @@ def run(config: Path = typer.Option(Path("config.yaml"), "--config")):
     except FatalChatError as exc:
         logging.error("浏览器任务已安全停止：%s", exc)
         raise typer.Exit(3) from exc
+    except Exception:
+        logging.exception("发送任务发生未捕获异常。")
+        raise typer.Exit(1)
     typer.echo("当天所有目标已完成。")
 
 
