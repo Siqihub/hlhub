@@ -6,6 +6,8 @@ from pathlib import Path
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
+from autody.runtime import configure_runtime
+
 
 CHAT_URL = "https://www.douyin.com/chat"
 
@@ -155,7 +157,19 @@ class DouyinChat:
         return path
 
 
-def login(profile_dir: Path, timeout_ms: int = 300_000) -> None:
+def _runtime_home(profile_dir: Path, home: Path | None) -> Path:
+    if home is not None:
+        return home
+    resolved = profile_dir.resolve()
+    return resolved.parent.parent if resolved.parent.name == "data" else resolved.parent
+
+
+def login(
+    profile_dir: Path,
+    timeout_ms: int = 300_000,
+    home: Path | None = None,
+) -> None:
+    configure_runtime(_runtime_home(profile_dir, home))
     profile_dir.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
@@ -175,7 +189,9 @@ def open_chat(
     timeout_ms: int = 30_000,
     headless: bool = True,
     artifact_dir: Path | None = None,
+    home: Path | None = None,
 ):
+    configure_runtime(_runtime_home(profile_dir, home))
     playwright = sync_playwright().start()
     context = playwright.chromium.launch_persistent_context(
         str(profile_dir), headless=headless

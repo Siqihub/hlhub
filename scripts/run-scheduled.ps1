@@ -1,6 +1,9 @@
 ﻿$ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$env:AUTODY_HOME = $Root
+$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $Root "data\ms-playwright"
+$env:PLAYWRIGHT_SKIP_BROWSER_GC = "1"
 $Exe = Join-Path $Root ".venv\Scripts\autody.exe"
 $Config = Join-Path $Root "config.yaml"
 $LogDir = Join-Path $Root "data\logs"

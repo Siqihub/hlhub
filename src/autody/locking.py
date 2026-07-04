@@ -2,6 +2,10 @@ import os
 from pathlib import Path
 
 
+class TaskAlreadyRunning(RuntimeError):
+    pass
+
+
 class SingleInstanceLock:
     def __init__(self, path: Path):
         self.path = path
@@ -25,7 +29,9 @@ class SingleInstanceLock:
         except OSError as exc:
             self.file.close()
             self.file = None
-            raise RuntimeError("autody is already running") from exc
+            raise TaskAlreadyRunning(
+                "已有 AutoDy 任务正在运行，本次跳过。"
+            ) from exc
         return self
 
     def __exit__(self, *_):
@@ -40,4 +46,3 @@ class SingleInstanceLock:
             fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
         self.file.close()
         self.file = None
-        self.path.unlink(missing_ok=True)

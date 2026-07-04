@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -13,7 +14,7 @@ class AppConfig(BaseModel):
     messages_file: Path = Path("messages.txt")
     profile_dir: Path = Path("data/browser-profile")
     state_file: Path = Path("data/state.json")
-    lock_file: Path = Path("data/autody.lock")
+    lock_file: Path = Path("data/locks/autody.lock")
     artifact_dir: Path = Path("data/artifacts")
     retry_count: int = Field(default=3, ge=1, le=5)
     timeout_ms: int = Field(default=30_000, ge=5_000, le=120_000)
@@ -38,3 +39,32 @@ def load_config(path: Path) -> AppConfig:
         if not value.is_absolute():
             setattr(config, field_name, path.parent / value)
     return config
+
+
+def save_config(path: Path, config: AppConfig) -> None:
+    path = path.resolve()
+    root = path.parent
+
+    def portable(value: Path) -> str:
+        try:
+            return str(value.resolve().relative_to(root))
+        except ValueError:
+            return str(value)
+
+    data = {
+        "targets": [{"name": target.name} for target in config.targets],
+        "messages_file": portable(config.messages_file),
+        "profile_dir": portable(config.profile_dir),
+        "state_file": portable(config.state_file),
+        "lock_file": portable(config.lock_file),
+        "artifact_dir": portable(config.artifact_dir),
+        "retry_count": config.retry_count,
+        "timeout_ms": config.timeout_ms,
+        "headless": config.headless,
+    }
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)

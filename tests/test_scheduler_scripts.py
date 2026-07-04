@@ -36,3 +36,16 @@ def test_scheduler_wrappers_log_and_notify():
     assert "RedirectStandardOutput" in health
     for token in ["AutoDy-Health-Daily", "07:20", "AutoDy-Health-Weekly", "20:00"]:
         assert token in install
+
+
+def test_scheduler_wrappers_set_portable_playwright_environment():
+    for path in [Path("scripts/run-scheduled.ps1"), Path("scripts/health-check.ps1")]:
+        text = path.read_text(encoding="utf-8-sig")
+        for token in ["AUTODY_HOME", "PLAYWRIGHT_BROWSERS_PATH", "PLAYWRIGHT_SKIP_BROWSER_GC"]:
+            assert token in text
+
+
+def test_every_scheduled_task_uses_ignore_new_policy():
+    text = Path("scripts/install-task.ps1").read_text(encoding="utf-8-sig")
+    assert "-MultipleInstances IgnoreNew" in text
+    assert text.count("-Settings $Settings") == 3
