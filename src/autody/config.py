@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+from enum import Enum
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -9,8 +10,21 @@ class Target(BaseModel):
     name: str = Field(min_length=1)
 
 
+class MessageSuffixStyle(str, Enum):
+    DASH = "dash"
+    BRACKET = "bracket"
+    NEWLINE = "newline"
+    NONE = "none"
+
+
+class MessageSuffixConfig(BaseModel):
+    enabled: bool = True
+    text: str = "gpt小助手"
+    style: MessageSuffixStyle = MessageSuffixStyle.DASH
+
+
 class AppConfig(BaseModel):
-    targets: list[Target] = Field(min_length=1)
+    targets: list[Target] = Field(default_factory=list)
     messages_file: Path = Path("messages.txt")
     profile_dir: Path = Path("data/browser-profile")
     state_file: Path = Path("data/state.json")
@@ -19,6 +33,8 @@ class AppConfig(BaseModel):
     retry_count: int = Field(default=3, ge=1, le=5)
     timeout_ms: int = Field(default=30_000, ge=5_000, le=120_000)
     headless: bool = True
+    message_suffix: MessageSuffixConfig = Field(default_factory=MessageSuffixConfig)
+    message_pack_index_url: str | None = None
 
     @model_validator(mode="after")
     def unique_targets(self):
@@ -27,6 +43,8 @@ class AppConfig(BaseModel):
             raise ValueError("target names must be unique")
         for target, name in zip(self.targets, names, strict=True):
             target.name = name
+        if self.message_pack_index_url is not None:
+            self.message_pack_index_url = self.message_pack_index_url.strip() or None
         return self
 
 
@@ -61,6 +79,8 @@ def save_config(path: Path, config: AppConfig) -> None:
         "retry_count": config.retry_count,
         "timeout_ms": config.timeout_ms,
         "headless": config.headless,
+        "message_suffix": config.message_suffix.model_dump(mode="json"),
+        "message_pack_index_url": config.message_pack_index_url,
     }
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(

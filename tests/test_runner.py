@@ -1,4 +1,5 @@
 from datetime import date
+import json
 from pathlib import Path
 
 from autody.config import AppConfig, Target
@@ -42,6 +43,7 @@ def test_second_run_same_day_sends_nothing(tmp_path: Path):
     assert second.skipped_count == 2
     assert len(chat.sent) == 2
     assert len({message for _, message in chat.sent}) == 1
+    assert chat.sent[0][1].endswith(" —— gpt小助手")
 
 
 def test_retry_only_processes_failed_target_with_same_message(tmp_path: Path):
@@ -71,3 +73,16 @@ def test_fatal_chat_error_returns_blocked_result(tmp_path: Path):
     assert result.status is RunStatus.BLOCKED
     assert result.sent_count == 0
     assert result.error == "需要安全验证"
+
+
+def test_suffix_is_send_only_and_state_tracks_base_message(tmp_path: Path):
+    config, chat = make_config(tmp_path), FakeChat()
+    original = config.messages_file.read_text(encoding="utf-8")
+
+    run_daily(config, chat, date(2026, 7, 4))
+
+    state = json.loads(config.state_file.read_text(encoding="utf-8"))
+    base = state["daily"]["2026-07-04"]["message"]
+    assert base in {"早安", "晚安"}
+    assert chat.sent[0][1] == f"{base} —— gpt小助手"
+    assert config.messages_file.read_text(encoding="utf-8") == original

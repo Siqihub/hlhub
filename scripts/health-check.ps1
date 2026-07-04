@@ -8,20 +8,11 @@ $Exe = Join-Path $Root ".venv\Scripts\autody.exe"
 $Config = Join-Path $Root "config.yaml"
 $LogDir = Join-Path $Root "data\logs"
 $Log = Join-Path $LogDir "scheduler.log"
-$Desktop = [Environment]::GetFolderPath("Desktop")
-$Alert = Join-Path $Desktop "AutoDy-需要处理.txt"
-$LoginShortcut = Join-Path $Desktop "AutoDy-重新登录.cmd"
+$NotificationDir = Join-Path $Root "data\notifications"
+$Alert = Join-Path $NotificationDir "need-attention.txt"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-@"
-@echo off
-set "AUTODY_HOME=$Root"
-set "PLAYWRIGHT_BROWSERS_PATH=$Root\data\ms-playwright"
-set "PLAYWRIGHT_SKIP_BROWSER_GC=1"
-cd /d "$Root"
-"$Exe" login --config "$Config"
-pause
-"@ | Set-Content -Encoding ASCII $LoginShortcut
+New-Item -ItemType Directory -Force -Path $NotificationDir | Out-Null
 
 "[$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")] 开始登录健康检查" |
     Add-Content -Encoding UTF8 $Log
@@ -49,7 +40,7 @@ if ($exitCode -ne 0) {
 AutoDy 登录或聊天页面检查失败。
 时间：$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 
-请双击桌面的 AutoDy-重新登录.cmd，完成扫码或安全验证。
+请打开桌面的 AutoDy 管理台，在“需要处理”中完成扫码或修复。
 详细日志：$Log
 "@
     $message | Set-Content -Encoding UTF8 $Alert
@@ -60,6 +51,8 @@ AutoDy 登录或聊天页面检查失败。
         "OK",
         "Warning"
     ) | Out-Null
+} elseif (Test-Path $Alert) {
+    Remove-Item -LiteralPath $Alert -Force
 }
 
 exit $exitCode

@@ -1,7 +1,8 @@
-import { ArchiveRestore, CalendarPlus2, Download, Play, ScanLine, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArchiveRestore, CalendarPlus2, Download, Play, ScanLine, ShieldCheck, Wrench } from "lucide-react";
 import { ActionButton } from "../components/ActionButton";
 import { StatusRail } from "../components/StatusRail";
 import type { DashboardStatus } from "../types";
+import type { ViewName } from "../components/Sidebar";
 
 const statusLabel = {
   success: "已发送",
@@ -18,8 +19,15 @@ export function DashboardPage({
   status: DashboardStatus;
   busy: string | null;
   onAction: (action: string) => void;
-  onNavigate: (view: "backup" | "scheduler") => void;
+  onNavigate: (view: ViewName) => void;
 }) {
+  const handleIssue = (action: string) => {
+    if (["friends", "messages", "packs", "scheduler", "logs", "backup", "settings"].includes(action)) {
+      onNavigate(action as ViewName);
+    } else {
+      onAction(action);
+    }
+  };
   return (
     <>
       <header className="page-header">
@@ -28,6 +36,7 @@ export function DashboardPage({
           <ActionButton disabled={!!busy} icon={<ShieldCheck size={17} />} onClick={() => onAction("health-check")}>检查登录</ActionButton>
           <ActionButton disabled={!!busy} primary icon={<Play size={17} fill="currentColor" />} onClick={() => onAction("run")}>立即运行</ActionButton>
           <ActionButton disabled={!!busy} icon={<ScanLine size={17} />} onClick={() => onAction("login")}>扫码登录</ActionButton>
+          <ActionButton disabled={!!busy} icon={<Wrench size={17} />} onClick={() => onAction("repair-playwright")}>修复运行时</ActionButton>
         </div>
       </header>
       <StatusRail status={status} />
@@ -57,6 +66,10 @@ export function DashboardPage({
           <button onClick={() => onNavigate("scheduler")}><CalendarPlus2 className="purple-text" /><span><strong>安装定时任务</strong><small>管理 07:20 与 07:30 任务</small></span></button>
         </aside>
       </div>
+      <section className="panel issues-panel">
+        <div className="panel-heading"><h2>需要处理</h2><span>{status.issues.length ? `${status.issues.length} 项` : "当前无异常"}</span></div>
+        {status.issues.length ? <div className="issue-list">{status.issues.map((issue) => <article className={`issue-item ${issue.status}`} key={issue.id}><AlertTriangle size={19} /><div><strong>{issue.explanation}</strong><small>{issue.id}</small></div><button className="action-button" disabled={!!busy} onClick={() => handleIssue(issue.action)}>{issue.action_label}</button></article>)}</div> : <div className="empty-state compact">运行状态正常，暂无需要处理的事项。</div>}
+      </section>
       <section className="panel friends-panel">
         <div className="panel-heading"><h2>好友状态</h2><span>共 {status.friends.length} 位</span></div>
         <div className="table-wrap">

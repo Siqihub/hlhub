@@ -13,7 +13,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import yaml
 
-from autody.config import AppConfig, Target, load_config, save_config
+from autody.config import (
+    AppConfig,
+    MessageSuffixConfig,
+    Target,
+    load_config,
+    save_config,
+)
+from autody.friend_discovery import load_discovered_friends
+from autody.message_packs import ImportMode, MessagePackError, MessagePackService
 from autody.messages import read_messages
 from autody.logging_setup import read_daily_logs
 from autody.state import StateStore
@@ -21,14 +29,20 @@ from autody.web_actions import ActionAlreadyRunning, ActionManager
 
 
 class ConfigUpdate(BaseModel):
-    targets: list[str] = Field(min_length=1)
+    targets: list[str] = Field(default_factory=list)
     retry_count: int = Field(ge=1, le=5)
     timeout_ms: int = Field(ge=5_000, le=120_000)
     headless: bool
+    message_suffix: MessageSuffixConfig = Field(default_factory=MessageSuffixConfig)
+    message_pack_index_url: str | None = None
 
 
 class MessagesUpdate(BaseModel):
     messages: list[str]
+
+
+class MessagePackImportRequest(BaseModel):
+    mode: ImportMode
 
 
 def _tail(path: Path, limit: int = 400) -> str:
@@ -46,6 +60,29 @@ def _login_status(log_text: str) -> str:
     if successful < 0 and failed < 0:
         return "unknown"
     return "failed" if failed > successful else "success"
+
+
+def _message_count(path: Path) -> int:
+    try:
+        return len(read_messages(path))
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _runtime_available(root: Path) -> bool:
+    browsers = root / "data" / "ms-playwright"
+    return any(browsers.glob("chromium-*/chrome-win*/chrome.exe"))
+
+
+def _config_payload(config: AppConfig) -> dict:
+    return {
+        "targets": [target.name for target in config.targets],
+        "retry_count": config.retry_count,
+        "timeout_ms": config.timeout_ms,
+        "headless": config.headless,
+        "message_suffix": config.message_suffix.model_dump(mode="json"),
+        "message_pack_index_url": config.message_pack_index_url,
+    }
 
 
 def _task_rows() -> list[dict]:
@@ -101,6 +138,8 @@ def _portable_config(config_path: Path, config: AppConfig) -> bytes:
         "retry_count": config.retry_count,
         "timeout_ms": config.timeout_ms,
         "headless": config.headless,
+        "message_suffix": config.message_suffix.model_dump(mode="json"),
+        "message_pack_index_url": config.message_pack_index_url,
     }
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False).encode("utf-8")
 
@@ -151,6 +190,7 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
             for day, value in sorted(state.daily.items(), reverse=True)
         ]
         tasks = _task_rows()
+        message_count = _message_count(config.messages_file)
         next_run = next(
             (
                 task.get("next_run")
@@ -159,6 +199,57 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
             ),
             None,
         )
+        login_status = _login_status(application_log)
+        issues = []
+        if login_status == "failed":
+            issues.append({
+                "id": "login_expired", "status": "error",
+                "explanation": "抖音登录已失效或需要安全验证。",
+                "action": "login", "action_label": "扫码登录",
+            })
+        if not _runtime_available(root):
+            issues.append({
+                "id": "runtime_missing", "status": "error",
+                "explanation": "项目内 Chromium 缺失或不可用。",
+                "action": "repair-playwright", "action_label": "修复运行时",
+            })
+        if not config.targets:
+            issues.append({
+                "id": "no_friends", "status": "warning",
+                "explanation": "尚未配置续火好友。",
+                "action": "friends", "action_label": "管理好友",
+            })
+        if message_count == 0:
+            issues.append({
+                "id": "no_messages", "status": "warning",
+                "explanation": "本地文案库为空。",
+                "action": "packs", "action_label": "导入文案",
+            })
+        if not any(task.get("name") == "AutoDy-DailySpark" for task in tasks):
+            issues.append({
+                "id": "scheduler_missing", "status": "warning",
+                "explanation": "每日定时任务尚未安装。",
+                "action": "scheduler", "action_label": "安装任务",
+            })
+        if daily.get("message") and not daily.get("consumed"):
+            issues.append({
+                "id": "last_run_partial", "status": "warning",
+                "explanation": "最近一次发送未全部完成，再次运行只补发失败目标。",
+                "action": "run", "action_label": "继续补发",
+            })
+        if not config.message_pack_index_url:
+            issues.append({
+                "id": "remote_library", "status": "warning",
+                "explanation": "未配置 GitHub 远程文案索引，当前使用内置文案包。",
+                "action": "packs", "action_label": "查看文案包",
+            })
+        notice = config.state_file.parent / "notifications" / "need-attention.txt"
+        if notice.exists():
+            issues.append({
+                "id": "notification", "status": "error",
+                "explanation": _tail(notice, 8),
+                "action": "logs", "action_label": "查看日志",
+            })
         return {
             "today": {
                 "date": key,
@@ -172,19 +263,14 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
             "history": history[:30],
             "scheduler": tasks,
             "next_run": next_run,
-            "login": {"status": _login_status(application_log)},
-            "message_count": len(read_messages(config.messages_file)),
+            "login": {"status": login_status},
+            "message_count": message_count,
+            "issues": issues,
         }
 
     @app.get("/api/config")
     def get_config():
-        config = load_config(config_path)
-        return {
-            "targets": [target.name for target in config.targets],
-            "retry_count": config.retry_count,
-            "timeout_ms": config.timeout_ms,
-            "headless": config.headless,
-        }
+        return _config_payload(load_config(config_path))
 
     @app.put("/api/config")
     def update_config(payload: ConfigUpdate):
@@ -193,14 +279,11 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
         config.retry_count = payload.retry_count
         config.timeout_ms = payload.timeout_ms
         config.headless = payload.headless
+        config.message_suffix = payload.message_suffix
+        config.message_pack_index_url = payload.message_pack_index_url
         config = AppConfig.model_validate(config.model_dump())
         save_config(config_path, config)
-        return {
-            "targets": [target.name for target in config.targets],
-            "retry_count": config.retry_count,
-            "timeout_ms": config.timeout_ms,
-            "headless": config.headless,
-        }
+        return _config_payload(config)
 
     @app.get("/api/messages")
     def get_messages():
@@ -217,6 +300,63 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
         temporary.write_text("\n".join(messages) + "\n", encoding="utf-8")
         os.replace(temporary, config.messages_file)
         return {"messages": messages}
+
+    @app.get("/api/message-packs")
+    def message_packs():
+        config = load_config(config_path)
+        try:
+            return MessagePackService(
+                root, config.message_pack_index_url
+            ).list_packs()
+        except MessagePackError as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    @app.get("/api/message-packs/{pack_id}")
+    def preview_message_pack(pack_id: str):
+        config = load_config(config_path)
+        try:
+            return MessagePackService(
+                root, config.message_pack_index_url
+            ).preview(pack_id)
+        except MessagePackError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/message-packs/{pack_id}/import")
+    def import_message_pack(pack_id: str, payload: MessagePackImportRequest):
+        config = load_config(config_path)
+        try:
+            return MessagePackService(
+                root, config.message_pack_index_url
+            ).import_pack(pack_id, config.messages_file, payload.mode)
+        except MessagePackError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/friends/scan", status_code=202)
+    def scan_friends():
+        try:
+            return run_action("scan-friends")
+        except ActionAlreadyRunning as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/friends/discovered")
+    def discovered_friends():
+        config = load_config(config_path)
+        result = load_discovered_friends(
+            config.state_file.parent / "discovered_friends.json"
+        )
+        if result is None:
+            return {"scanned_at": None, "candidates": []}
+        configured = {target.name for target in config.targets}
+        return {
+            "scanned_at": result.scanned_at,
+            "candidates": [
+                {
+                    "name": candidate.name,
+                    "already_configured": candidate.name in configured,
+                }
+                for candidate in result.candidates
+            ],
+        }
 
     @app.get("/api/logs")
     def logs():
@@ -296,6 +436,8 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
             "run",
             "login",
             "health-check",
+            "scan-friends",
+            "repair-playwright",
             "install-scheduler",
             "remove-scheduler",
         }:

@@ -6,6 +6,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { FriendsPage } from "./pages/FriendsPage";
 import { LogsPage } from "./pages/LogsPage";
 import { MessagesPage } from "./pages/MessagesPage";
+import { MessagePacksPage } from "./pages/MessagePacksPage";
 import { SchedulerPage } from "./pages/SchedulerPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { DashboardStatus } from "./types";
@@ -43,7 +44,8 @@ export default function App() {
       <main className="workspace">
         {view === "dashboard" && <DashboardPage status={status} busy={busy} onAction={action} onNavigate={setView} />}
         {view === "friends" && <FriendsPage notify={notify} />}
-        {view === "messages" && <MessagesPage notify={notify} />}
+        {view === "messages" && <MessagesPage notify={notify} onNavigate={setView} />}
+        {view === "packs" && <MessagePacksPage notify={notify} />}
         {view === "scheduler" && <SchedulerPage status={status} onAction={action} busy={busy} />}
         {view === "logs" && <LogsPage />}
         {view === "backup" && <BackupPage notify={notify} />}

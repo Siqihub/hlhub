@@ -28,10 +28,12 @@ def test_scheduler_wrappers_log_and_notify():
     run = Path("scripts/run-scheduled.ps1").read_text(encoding="utf-8-sig")
     health = Path("scripts/health-check.ps1").read_text(encoding="utf-8-sig")
     install = Path("scripts/install-task.ps1").read_text(encoding="utf-8-sig")
-    for token in ["scheduler.log", "AutoDy-需要处理.txt", "MessageBox"]:
+    for token in ["scheduler.log", "data\\notifications", "MessageBox"]:
         assert token in run
-    for token in ["health-check", "AutoDy-重新登录.cmd", "MessageBox"]:
+    for token in ["health-check", "data\\notifications", "MessageBox"]:
         assert token in health
+    assert "Desktop" not in run
+    assert "Desktop" not in health
     assert "RedirectStandardOutput" in run
     assert "RedirectStandardOutput" in health
     for token in ["AutoDy-Health-Daily", "07:20", "AutoDy-Health-Weekly", "20:00"]:

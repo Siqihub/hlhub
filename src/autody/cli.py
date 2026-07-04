@@ -8,6 +8,7 @@ import uvicorn
 
 from autody.chat import DOUYIN_SELECTORS, DouyinChat, FatalChatError, login as browser_login, open_chat
 from autody.config import AppConfig, load_config
+from autody.friend_discovery import discover_friends
 from autody.locking import SingleInstanceLock, TaskAlreadyRunning
 from autody.logging_setup import setup_logging
 from autody.messages import read_messages
@@ -79,6 +80,40 @@ def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
         typer.echo("登录健康检查发生未捕获异常，请查看当天日志。", err=True)
         raise typer.Exit(1)
     typer.echo("登录状态正常，聊天页可用。")
+
+
+@app.command("scan-friends")
+def scan_friends(config: Path = typer.Option(Path("config.yaml"), "--config")):
+    loaded = load_config(config)
+    try:
+        with SingleInstanceLock(loaded.lock_file):
+            configure_runtime(_project_root(config))
+            setup_logging(loaded)
+            with open_chat(
+                loaded.profile_dir,
+                loaded.timeout_ms,
+                True,
+                loaded.artifact_dir,
+                home=_project_root(config),
+            ) as page:
+                result = discover_friends(
+                    loaded,
+                    page,
+                    DOUYIN_SELECTORS,
+                    loaded.state_file.parent / "discovered_friends.json",
+                )
+            logging.info("好友识别完成：发现 %s 个候选", len(result.candidates))
+            typer.echo(f"好友识别完成：发现 {len(result.candidates)} 个候选。")
+    except TaskAlreadyRunning:
+        _busy()
+    except FatalChatError as exc:
+        logging.error("好友识别失败：%s", exc)
+        typer.echo(f"好友识别失败：{exc}", err=True)
+        raise typer.Exit(3) from exc
+    except Exception:
+        logging.exception("好友识别发生未捕获异常。")
+        typer.echo("好友识别失败，请查看当天日志。", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()

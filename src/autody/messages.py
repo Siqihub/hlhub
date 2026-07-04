@@ -2,6 +2,7 @@ from pathlib import Path
 import random
 
 from autody.state import RotationState
+from autody.config import MessageSuffixConfig, MessageSuffixStyle
 
 
 def read_messages(path: Path) -> list[str]:
@@ -13,6 +14,19 @@ def read_messages(path: Path) -> list[str]:
     if not messages:
         raise ValueError("message library is empty")
     return list(dict.fromkeys(messages))
+
+
+def format_message_with_suffix(message: str, suffix: MessageSuffixConfig) -> str:
+    text = suffix.text.strip()
+    if not suffix.enabled or not text:
+        return message
+    if suffix.style is MessageSuffixStyle.DASH:
+        return f"{message} —— {text}"
+    if suffix.style is MessageSuffixStyle.BRACKET:
+        return f"{message}【{text}】"
+    if suffix.style is MessageSuffixStyle.NEWLINE:
+        return f"{message}\n{text}"
+    return f"{message} {text}"
 
 
 class MessageRotation:

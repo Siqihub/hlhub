@@ -1,4 +1,11 @@
-import type { AppConfig, DashboardStatus } from "./types";
+import type {
+  AppConfig,
+  DashboardStatus,
+  FriendDiscovery,
+  PackCatalog,
+  PackImportResult,
+  PackPreview
+} from "./types";
 
 type ActionJob = {
   id: string;
@@ -30,6 +37,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ messages })
     }),
+  messagePacks: () => request<PackCatalog>("/api/message-packs"),
+  previewMessagePack: (id: string) =>
+    request<PackPreview>(`/api/message-packs/${encodeURIComponent(id)}`),
+  importMessagePack: (id: string, mode: "merge" | "replace" | "preview_only") =>
+    request<PackImportResult>(`/api/message-packs/${encodeURIComponent(id)}/import`, {
+      method: "POST",
+      body: JSON.stringify({ mode })
+    }),
   logs: () => request<{ application: string; scheduler: string }>("/api/logs"),
   action: (name: string) =>
     request<ActionJob>(`/api/actions/${name}`, {
@@ -43,6 +58,10 @@ export const api = {
     }
     throw new Error("操作等待超时，请查看运行日志");
   },
+  scanFriends: () =>
+    request<ActionJob>("/api/friends/scan", { method: "POST" }),
+  discoveredFriends: () =>
+    request<FriendDiscovery>("/api/friends/discovered"),
   importBackup: (file: File) => {
     const data = new FormData();
     data.append("file", file);

@@ -4,7 +4,12 @@ import App from "./App";
 
 const apiMocks = vi.hoisted(() => ({
   action: vi.fn(),
-  waitForAction: vi.fn()
+  waitForAction: vi.fn(),
+  messagePacks: vi.fn().mockResolvedValue({
+    packs: [{ id: "daily", name: "日常问候", description: "自然短问候", version: "1.0.0", count: 50, category: "daily" }],
+    source: "local",
+    warning: null
+  })
 }));
 
 afterEach(() => {
@@ -21,10 +26,12 @@ vi.mock("./api", () => ({
       scheduler: [],
       next_run: "2026-06-25T07:30:00",
       login: { status: "normal" },
-      message_count: 60
+      message_count: 60,
+      issues: []
     }),
     action: apiMocks.action,
-    waitForAction: apiMocks.waitForAction
+    waitForAction: apiMocks.waitForAction,
+    messagePacks: apiMocks.messagePacks
   }
 }));
 
@@ -52,4 +59,12 @@ test("keeps browser action buttons disabled until the action finishes", async ()
 
   finish({ status: "success" });
   await waitFor(() => expect(runButton).not.toBeDisabled());
+});
+
+test("opens the online message library from navigation", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "在线文案库" }));
+
+  expect(await screen.findByRole("heading", { name: "在线文案库" })).toBeInTheDocument();
+  expect(screen.getByText("日常问候")).toBeInTheDocument();
 });

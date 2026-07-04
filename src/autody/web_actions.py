@@ -7,7 +7,13 @@ import threading
 import uuid
 
 
-BROWSER_ACTIONS = {"run", "login", "health-check"}
+BROWSER_ACTIONS = {
+    "run",
+    "login",
+    "health-check",
+    "scan-friends",
+    "repair-playwright",
+}
 
 
 class ActionAlreadyRunning(RuntimeError):
@@ -54,7 +60,7 @@ class ActionManager:
             return asdict(job) if job else None
 
     def _command(self, action: str) -> list[str]:
-        if action in {"run", "login", "health-check"}:
+        if action in {"run", "login", "health-check", "scan-friends", "repair-playwright"}:
             return [
                 sys.executable,
                 "-m",

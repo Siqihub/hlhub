@@ -8,10 +8,11 @@ $Exe = Join-Path $Root ".venv\Scripts\autody.exe"
 $Config = Join-Path $Root "config.yaml"
 $LogDir = Join-Path $Root "data\logs"
 $Log = Join-Path $LogDir "scheduler.log"
-$Desktop = [Environment]::GetFolderPath("Desktop")
-$Alert = Join-Path $Desktop "AutoDy-需要处理.txt"
+$NotificationDir = Join-Path $Root "data\notifications"
+$Alert = Join-Path $NotificationDir "need-attention.txt"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $NotificationDir | Out-Null
 $started = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 "[$started] 开始每日发送任务" | Add-Content -Encoding UTF8 $Log
 $stdout = Join-Path $env:TEMP "autody-run-stdout-$PID.log"
@@ -42,7 +43,7 @@ AutoDy 每日发送任务失败。
 请查看：
 $Log
 
-如果提示登录失效，请双击桌面的 AutoDy-重新登录.cmd。
+如果提示登录失效，请打开桌面的 AutoDy 管理台查看“需要处理”。
 "@
     $message | Set-Content -Encoding UTF8 $Alert
     Add-Type -AssemblyName PresentationFramework
@@ -52,6 +53,8 @@ $Log
         "OK",
         "Warning"
     ) | Out-Null
+} elseif (Test-Path $Alert) {
+    Remove-Item -LiteralPath $Alert -Force
 }
 
 exit $exitCode

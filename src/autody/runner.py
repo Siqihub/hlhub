@@ -7,7 +7,7 @@ import time
 
 from autody.chat import FatalChatError
 from autody.config import AppConfig
-from autody.messages import MessageRotation, read_messages
+from autody.messages import MessageRotation, format_message_with_suffix, read_messages
 from autody.state import StateStore
 
 
@@ -52,13 +52,16 @@ def run_daily(config: AppConfig, chat, today: date | None = None) -> RunResult:
     if not daily["message"]:
         daily["message"] = rotation.peek(messages, state.rotation)
         store.save(state)
+    outgoing_message = format_message_with_suffix(
+        daily["message"], config.message_suffix
+    )
 
     sent = 0
     for target in pending:
         error = None
         for attempt in range(config.retry_count):
             try:
-                chat.send(target, daily["message"])
+                chat.send(target, outgoing_message)
                 daily["succeeded"].append(target)
                 daily["failures"].pop(target, None)
                 sent += 1

@@ -8,3 +8,8 @@ artifact_dir: data/artifacts
 retry_count: 3
 timeout_ms: 30000
 headless: true
+message_suffix:
+  enabled: true
+  text: "gpt小助手"
+  style: dash
+message_pack_index_url:

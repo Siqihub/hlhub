@@ -43,6 +43,30 @@ headless: true
     logs = tmp_path / "data" / "logs"
     logs.mkdir()
     (logs / "autody.log").write_text("发送成功：小明\n", encoding="utf-8")
+    packs = tmp_path / "message-packs"
+    packs.mkdir()
+    (packs / "daily.txt").write_text("早安呀\n今天顺利\n", encoding="utf-8")
+    (packs / "index.json").write_text(
+        json.dumps(
+            {
+                "packs": [
+                    {
+                        "id": "daily",
+                        "name": "日常",
+                        "description": "日常测试包",
+                        "version": "1.0.0",
+                        "file": "daily.txt",
+                        "relative_url": "daily.txt",
+                        "raw_url": None,
+                        "count": 2,
+                        "category": "daily",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     return tmp_path / "config.yaml"
 
 
@@ -87,10 +111,17 @@ def test_config_and_messages_can_be_updated(tmp_path: Path):
             "retry_count": 2,
             "timeout_ms": 45000,
             "headless": False,
+            "message_suffix": {
+                "enabled": True,
+                "text": "每日问候",
+                "style": "bracket",
+            },
+            "message_pack_index_url": "https://example.com/index.json",
         },
     )
     assert response.status_code == 200
     assert response.json()["targets"] == ["小明", "小蓝"]
+    assert response.json()["message_suffix"]["text"] == "每日问候"
 
     response = client.put("/api/messages", json={"messages": ["甲", "乙", "甲"]})
     assert response.status_code == 200
@@ -152,3 +183,77 @@ def test_actions_are_started_and_reported(tmp_path: Path):
     assert response.status_code == 202
     assert response.json()["id"] == "job-1"
     assert calls == ["run"]
+
+
+def test_message_pack_list_preview_and_merge_import(tmp_path: Path):
+    client = TestClient(create_app(make_project(tmp_path)))
+
+    catalog = client.get("/api/message-packs")
+    assert catalog.status_code == 200
+    assert catalog.json()["packs"][0]["id"] == "daily"
+    assert catalog.json()["source"] == "local"
+
+    preview = client.get("/api/message-packs/daily")
+    assert preview.status_code == 200
+    assert preview.json()["messages"] == ["早安呀", "今天顺利"]
+
+    imported = client.post(
+        "/api/message-packs/daily/import", json={"mode": "merge"}
+    )
+    assert imported.status_code == 200
+    assert imported.json()["added_count"] == 2
+    assert imported.json()["total_count"] == 4
+    assert imported.json()["backup_path"].endswith(".txt")
+    assert "早安呀" in (tmp_path / "messages.txt").read_text(encoding="utf-8")
+
+
+def test_scan_friends_endpoint_starts_action_and_lists_candidates(tmp_path: Path):
+    calls = []
+
+    def runner(action: str):
+        calls.append(action)
+        return {"id": "scan-1", "action": action, "status": "running"}
+
+    config = make_project(tmp_path)
+    discovered = tmp_path / "data" / "discovered_friends.json"
+    discovered.write_text(
+        json.dumps(
+            {
+                "scanned_at": "2026-07-04T12:30:00",
+                "candidates": [
+                    {"name": "小明", "already_configured": True},
+                    {"name": "新朋友", "already_configured": False},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(config, action_runner=runner))
+
+    response = client.post("/api/friends/scan")
+    candidates = client.get("/api/friends/discovered")
+
+    assert response.status_code == 202
+    assert calls == ["scan-friends"]
+    assert candidates.json()["candidates"][1]["name"] == "新朋友"
+
+
+def test_status_returns_actionable_issues_without_friends_or_messages(
+    tmp_path: Path, monkeypatch
+):
+    config = make_project(tmp_path)
+    config.write_text(
+        "targets: []\nmessages_file: messages.txt\nstate_file: data/state.json\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "messages.txt").write_text("\n", encoding="utf-8")
+    monkeypatch.setattr("autody.web_api._task_rows", lambda: [])
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/status?today=2026-07-04")
+
+    assert response.status_code == 200
+    issue_ids = {issue["id"] for issue in response.json()["issues"]}
+    assert {"no_friends", "no_messages", "scheduler_missing", "runtime_missing"} <= issue_ids
+    assert "remote_library" in issue_ids

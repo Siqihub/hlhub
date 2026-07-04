@@ -1,8 +1,14 @@
-import { Plus, Save, Search, Trash2 } from "lucide-react";
+import { CloudDownload, Plus, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 
-export function MessagesPage({ notify }: { notify: (message: string) => void }) {
+export function MessagesPage({
+  notify,
+  onNavigate
+}: {
+  notify: (message: string) => void;
+  onNavigate: (view: "packs") => void;
+}) {
   const [messages, setMessages] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   useEffect(() => { void api.messages().then((data) => setMessages(data.messages)); }, []);
@@ -17,7 +23,7 @@ export function MessagesPage({ notify }: { notify: (message: string) => void }) 
   };
   return (
     <section className="editor-page">
-      <header className="page-header"><div><h1>文案库</h1><p>每个运行日随机选取一条，本轮全部使用前不会重复。</p></div><button className="action-button primary" onClick={save}><Save size={17} />保存文案库</button></header>
+      <header className="page-header"><div><h1>文案库</h1><p>每个运行日随机选取一条，本轮全部使用前不会重复。</p></div><div className="header-actions"><button className="action-button" onClick={() => onNavigate("packs")}><CloudDownload size={17} />从在线文案库导入</button><button className="action-button primary" onClick={save}><Save size={17} />保存文案库</button></div></header>
       <div className="toolbar panel">
         <label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文案…" /></label>
         <span>{messages.length} 条文案</span>

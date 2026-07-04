@@ -1,5 +1,6 @@
 import {
   ArchiveRestore,
+  CloudDownload,
   Clock3,
   FileText,
   Flame,
@@ -13,6 +14,7 @@ export type ViewName =
   | "dashboard"
   | "friends"
   | "messages"
+  | "packs"
   | "scheduler"
   | "logs"
   | "backup"
@@ -22,6 +24,7 @@ const navigation = [
   ["dashboard", "总览", LayoutDashboard],
   ["friends", "好友管理", Users],
   ["messages", "文案库", FileText],
+  ["packs", "在线文案库", CloudDownload],
   ["scheduler", "定时任务", Clock3],
   ["logs", "运行日志", ScrollText],
   ["backup", "备份迁移", ArchiveRestore],

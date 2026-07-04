@@ -85,6 +85,30 @@ def test_health_check_skips_when_another_browser_task_holds_lock(
     assert called is False
 
 
+def test_scan_friends_uses_same_global_lock(tmp_path: Path, monkeypatch):
+    (tmp_path / "messages.txt").write_text("早安\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "targets: []\nmessages_file: messages.txt\n"
+        "lock_file: data/locks/autody.lock\n",
+        encoding="utf-8",
+    )
+    called = False
+
+    def should_not_open(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("browser must not open while lock is held")
+
+    monkeypatch.setattr("autody.cli.open_chat", should_not_open)
+    with SingleInstanceLock(tmp_path / "data" / "locks" / "autody.lock"):
+        result = runner.invoke(app, ["scan-friends", "--config", str(config)])
+
+    assert result.exit_code == 0
+    assert "已有 AutoDy 任务正在运行，本次跳过。" in result.stdout
+    assert called is False
+
+
 def test_run_reports_already_done_without_claiming_new_send(tmp_path: Path, monkeypatch):
     (tmp_path / "messages.txt").write_text("早安\n", encoding="utf-8")
     config = tmp_path / "config.yaml"

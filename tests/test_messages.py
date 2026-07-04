@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from autody.messages import MessageRotation, read_messages
+from autody.config import MessageSuffixConfig, MessageSuffixStyle
+from autody.messages import MessageRotation, format_message_with_suffix, read_messages
 from autody.state import RotationState
 
 
@@ -38,3 +39,27 @@ def test_rotation_recovers_when_library_changes():
     assert rotation.peek(["keep", "new"], state) in {"keep", "new"}
     assert "removed" not in state.order
     assert "done" not in state.consumed
+
+
+@pytest.mark.parametrize(
+    ("style", "expected"),
+    [
+        (MessageSuffixStyle.DASH, "早安 —— gpt小助手"),
+        (MessageSuffixStyle.BRACKET, "早安【gpt小助手】"),
+        (MessageSuffixStyle.NEWLINE, "早安\ngpt小助手"),
+        (MessageSuffixStyle.NONE, "早安 gpt小助手"),
+    ],
+)
+def test_formats_enabled_suffix_styles(style: MessageSuffixStyle, expected: str):
+    suffix = MessageSuffixConfig(enabled=True, text="gpt小助手", style=style)
+
+    assert format_message_with_suffix("早安", suffix) == expected
+
+
+def test_disabled_or_blank_suffix_keeps_base_message():
+    assert format_message_with_suffix(
+        "早安", MessageSuffixConfig(enabled=False, text="gpt小助手")
+    ) == "早安"
+    assert format_message_with_suffix(
+        "早安", MessageSuffixConfig(enabled=True, text="  ")
+    ) == "早安"

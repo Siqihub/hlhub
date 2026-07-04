@@ -9,7 +9,7 @@ if (Test-Path $Archive) { Remove-Item -LiteralPath $Archive -Force }
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 $items = @(
-    "src", "scripts", "docs", ".github",
+    "src", "scripts", "docs", "assets", "message-packs", ".github",
     "pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
     "config.example.yaml", "messages.example.txt", "install.cmd"
 )
