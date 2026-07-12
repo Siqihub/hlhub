@@ -19,7 +19,7 @@ $stdout = Join-Path $env:TEMP "autody-run-stdout-$PID.log"
 $stderr = Join-Path $env:TEMP "autody-run-stderr-$PID.log"
 $process = Start-Process `
     -FilePath $Exe `
-    -ArgumentList @("run", "--config", "`"$Config`"") `
+    -ArgumentList @("run", "--config", "`"$Config`"", "--source", "scheduled") `
     -WorkingDirectory $Root `
     -Wait `
     -PassThru `

@@ -1,4 +1,7 @@
+import json
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
 import threading
 import webbrowser
@@ -6,21 +9,30 @@ import webbrowser
 import typer
 import uvicorn
 
-from autody.chat import DOUYIN_SELECTORS, DouyinChat, FatalChatError, login as browser_login, open_chat
+from autody.chat import (
+    DOUYIN_CONFIRMATION_SELECTORS,
+    DOUYIN_SELECTORS,
+    AuthenticationError,
+    DouyinChat,
+    FatalChatError,
+    login as browser_login,
+    open_chat,
+)
 from autody.config import AppConfig, load_config
 from autody.friend_discovery import discover_friends
 from autody.locking import SingleInstanceLock, TaskAlreadyRunning
 from autody.logging_setup import setup_logging
 from autody.messages import read_messages
+from autody.recovery import recovery_due
 from autody.runner import RunStatus, run_daily
 from autody.runtime import configure_runtime, doctor_playwright, repair_playwright
+from autody.state import StateStore
 from autody.web_api import create_app
 
 
 app = typer.Typer(no_args_is_help=True, help="抖音每日续火花工具")
-
-
 BUSY_MESSAGE = "已有 AutoDy 任务正在运行，本次跳过。"
+TRIGGER_SOURCES = {"scheduled", "manual", "startup_recovery", "retry"}
 
 
 def _project_root(config_path: Path) -> Path:
@@ -29,6 +41,27 @@ def _project_root(config_path: Path) -> Path:
 
 def _busy() -> None:
     typer.echo(BUSY_MESSAGE)
+
+
+def _write_health(config: AppConfig, status: str, detail: str = "") -> None:
+    path = config.state_file.parent / "health.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps({"status": status, "detail": detail}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _write_attention(config: AppConfig, message: str) -> None:
+    path = config.state_file.parent / "notifications" / "need-attention.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(message, encoding="utf-8")
+
+
+def _clear_attention(config: AppConfig) -> None:
+    (config.state_file.parent / "notifications" / "need-attention.txt").unlink(missing_ok=True)
 
 
 @app.command("check-config")
@@ -48,6 +81,7 @@ def login(config: Path = typer.Option(Path("config.yaml"), "--config")):
             configure_runtime(_project_root(config))
             typer.echo("浏览器将打开，请扫码登录；检测到聊天列表后会自动保存并关闭。")
             browser_login(loaded.profile_dir, home=_project_root(config))
+            _write_health(loaded, "success")
             typer.echo("登录状态已保存。")
     except TaskAlreadyRunning:
         _busy()
@@ -66,19 +100,31 @@ def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
                 True,
                 loaded.artifact_dir,
                 home=_project_root(config),
-            ):
+            ) as page:
                 logging.info("登录状态和抖音聊天页正常。")
+                _write_health(loaded, "success")
+                if recovery_due(loaded, StateStore(loaded.state_file).load(), datetime.now()):
+                    logging.info("检测到今日任务错过，启动同日恢复运行。")
+                    chat = DouyinChat(
+                        page,
+                        DOUYIN_SELECTORS,
+                        loaded.artifact_dir,
+                        DOUYIN_CONFIRMATION_SELECTORS,
+                    )
+                    run_daily(loaded, chat, trigger_source="startup_recovery")
     except TaskAlreadyRunning:
         _busy()
         return
     except FatalChatError as exc:
+        _write_health(loaded, "failed", str(exc))
+        _write_attention(loaded, "抖音登录已失效，请打开 AutoDy 管理台完成扫码登录。")
         logging.error("登录健康检查失败：%s", exc)
         typer.echo(f"登录健康检查失败：{exc}", err=True)
         raise typer.Exit(3) from exc
-    except Exception:
+    except Exception as exc:
         logging.exception("登录健康检查发生未捕获异常。")
         typer.echo("登录健康检查发生未捕获异常，请查看当天日志。", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
     typer.echo("登录状态正常，聊天页可用。")
 
 
@@ -110,10 +156,10 @@ def scan_friends(config: Path = typer.Option(Path("config.yaml"), "--config")):
         logging.error("好友识别失败：%s", exc)
         typer.echo(f"好友识别失败：{exc}", err=True)
         raise typer.Exit(3) from exc
-    except Exception:
+    except Exception as exc:
         logging.exception("好友识别发生未捕获异常。")
         typer.echo("好友识别失败，请查看当天日志。", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
 
 @app.command()
@@ -137,9 +183,7 @@ def doctor(config: Path = typer.Option(Path("config.yaml"), "--config")):
 
 
 @app.command("repair-playwright")
-def repair_playwright_command(
-    config: Path = typer.Option(Path("config.yaml"), "--config")
-):
+def repair_playwright_command(config: Path = typer.Option(Path("config.yaml"), "--config")):
     loaded = load_config(config)
     try:
         with SingleInstanceLock(loaded.lock_file):
@@ -173,7 +217,12 @@ def ui(
 
 
 @app.command()
-def run(config: Path = typer.Option(Path("config.yaml"), "--config")):
+def run(
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    source: str = typer.Option("manual", "--source"),
+):
+    if source not in TRIGGER_SOURCES:
+        raise typer.BadParameter(f"未知任务来源：{source}")
     loaded = load_config(config)
     try:
         with SingleInstanceLock(loaded.lock_file):
@@ -186,15 +235,15 @@ def run(config: Path = typer.Option(Path("config.yaml"), "--config")):
                 loaded.artifact_dir,
                 home=_project_root(config),
             ) as page:
-                chat = DouyinChat(page, DOUYIN_SELECTORS, loaded.artifact_dir)
-                result = run_daily(loaded, chat)
-            if result.status is RunStatus.ALREADY_DONE:
-                message = "当天所有目标此前已完成。"
-            else:
-                message = (
-                    f"本次发送完成：成功 {result.sent_count} 个，"
-                    f"失败 {result.failed_count} 个。"
+                chat = DouyinChat(
+                    page,
+                    DOUYIN_SELECTORS,
+                    loaded.artifact_dir,
+                    DOUYIN_CONFIRMATION_SELECTORS,
                 )
+                result = run_daily(loaded, chat, trigger_source=source)
+            _write_health(loaded, "success")
+            message = "当天所有目标此前已完成。" if result.status is RunStatus.ALREADY_DONE else f"本次发送完成：成功 {result.sent_count} 个，失败 {result.failed_count} 个。"
             logging.info(message)
             typer.echo(message)
             if result.status is RunStatus.PARTIAL_FAILED:
@@ -207,19 +256,25 @@ def run(config: Path = typer.Option(Path("config.yaml"), "--config")):
                 logging.error(detail)
                 typer.echo(detail, err=True)
                 raise typer.Exit(3)
+            _clear_attention(loaded)
     except TaskAlreadyRunning:
         _busy()
         return
+    except AuthenticationError as exc:
+        _write_health(loaded, "failed", str(exc))
+        _write_attention(loaded, "抖音登录已失效，请打开 AutoDy 管理台完成扫码登录。")
+        typer.echo(f"浏览器任务已安全停止：{exc}", err=True)
+        raise typer.Exit(3) from exc
     except FatalChatError as exc:
         logging.error("浏览器任务已安全停止：%s", exc)
         typer.echo(f"浏览器任务已安全停止：{exc}", err=True)
         raise typer.Exit(3) from exc
     except typer.Exit:
         raise
-    except Exception:
+    except Exception as exc:
         logging.exception("发送任务发生未捕获异常。")
         typer.echo("发送任务发生未捕获异常，请查看当天日志。", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
 
 if __name__ == "__main__":

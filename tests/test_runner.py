@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from autody.config import AppConfig, Target
-from autody.chat import FatalChatError
+from autody.chat import DeliveryResult, DeliveryStatus, FatalChatError
 from autody.runner import RunStatus, run_daily
 
 
@@ -86,3 +86,48 @@ def test_suffix_is_send_only_and_state_tracks_base_message(tmp_path: Path):
     assert base in {"早安", "晚安"}
     assert chat.sent[0][1] == f"{base} —— gpt小助手"
     assert config.messages_file.read_text(encoding="utf-8") == original
+
+
+def test_confirmation_failure_is_not_recorded_as_success_and_retry_does_not_duplicate(tmp_path: Path):
+    config = make_config(tmp_path)
+    config.retry_count = 2
+    config.targets = [Target(name="小明")]
+
+    class UnconfirmedChat:
+        def __init__(self):
+            self.calls = 0
+
+        def send(self, _target, _message):
+            self.calls += 1
+            return DeliveryResult(DeliveryStatus.CONFIRMATION_FAILED, confirmation_attempts=3, error="not visible")
+
+    first_chat = UnconfirmedChat()
+    first = run_daily(config, first_chat, date(2026, 7, 13))
+
+    class ExistingBubbleChat:
+        def __init__(self):
+            self.calls = 0
+
+        def send(self, _target, _message):
+            self.calls += 1
+            return DeliveryResult(DeliveryStatus.CONFIRMED, send_attempts=0)
+
+    second_chat = ExistingBubbleChat()
+    second = run_daily(config, second_chat, date(2026, 7, 13))
+
+    assert first.status is RunStatus.PARTIAL_FAILED
+    assert first_chat.calls == 1
+    assert second.status is RunStatus.COMPLETED
+    assert second_chat.calls == 1
+
+
+def test_structured_history_contains_ids_not_friend_names(tmp_path: Path):
+    config, chat = make_config(tmp_path), FakeChat()
+
+    result = run_daily(config, chat, date(2026, 7, 13), trigger_source="scheduled")
+
+    lines = (config.state_file.parent / "history" / "task-runs.jsonl").read_text(encoding="utf-8")
+    assert result.run_id in lines
+    assert '"trigger_source": "scheduled"' in lines
+    assert "小明" not in lines
+    assert "小红" not in lines

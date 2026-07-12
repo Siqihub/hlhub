@@ -5,6 +5,7 @@ import App from "./App";
 const apiMocks = vi.hoisted(() => ({
   action: vi.fn(),
   waitForAction: vi.fn(),
+  checkRecovery: vi.fn().mockResolvedValue({ due: false, started: false }),
   messagePacks: vi.fn().mockResolvedValue({
     packs: [{ id: "daily", name: "日常问候", description: "自然短问候", version: "1.0.0", count: 50, category: "daily" }],
     source: "local",
@@ -22,15 +23,17 @@ vi.mock("./api", () => ({
     status: vi.fn().mockResolvedValue({
       today: { date: "2026-06-24", message: "测试文案", succeeded: 9, failed: 0, total: 9, complete: true },
       friends: [{ name: "小明", status: "success" }],
-      history: [{ date: "2026-06-24", message: "测试文案", succeeded: 9, total: 9, failed: 0, complete: true }],
+      history: [{ run_id: "run-1", date: "2026-06-24", task_type: "daily_send", trigger_source: "scheduled", success_count: 9, failed_count: 0, skipped_count: 0, total_targets: 9, retry_count: 0, final_status: "completed", end_time: "2026-06-24T07:31:00" }],
       scheduler: [],
       next_run: "2026-06-25T07:30:00",
       login: { status: "normal" },
       message_count: 60,
-      issues: []
+      issues: [],
+      statistics: { last_completed_run: "2026-06-24T07:31:00", consecutive_successful_days: 7, success_rate_7d: 100, success_rate_30d: 98, retries_7d: 1, successful_today: 9, failed_today: 0, configured_friend_count: 9, enabled_friend_count: 9, local_message_count: 60, active_message_pack_count: 5, next_health_check: null, next_daily_send: "2026-06-25T07:30:00", most_recent_issue: null }
     }),
     action: apiMocks.action,
     waitForAction: apiMocks.waitForAction,
+    checkRecovery: apiMocks.checkRecovery,
     messagePacks: apiMocks.messagePacks
   }
 }));

@@ -1,9 +1,9 @@
-from pathlib import Path
-import os
 from enum import Enum
+import os
+from pathlib import Path
 
-import yaml
 from pydantic import BaseModel, Field, model_validator
+import yaml
 
 
 class Target(BaseModel):
@@ -35,6 +35,9 @@ class AppConfig(BaseModel):
     headless: bool = True
     message_suffix: MessageSuffixConfig = Field(default_factory=MessageSuffixConfig)
     message_pack_index_url: str | None = None
+    daily_send_time: str = Field(default="07:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    recovery_deadline: str = Field(default="23:59", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    mask_log_friend_names: bool = True
 
     @model_validator(mode="after")
     def unique_targets(self):
@@ -45,6 +48,8 @@ class AppConfig(BaseModel):
             target.name = name
         if self.message_pack_index_url is not None:
             self.message_pack_index_url = self.message_pack_index_url.strip() or None
+        if self.recovery_deadline < self.daily_send_time:
+            raise ValueError("recovery deadline must not be earlier than daily send time")
         return self
 
 
@@ -81,10 +86,12 @@ def save_config(path: Path, config: AppConfig) -> None:
         "headless": config.headless,
         "message_suffix": config.message_suffix.model_dump(mode="json"),
         "message_pack_index_url": config.message_pack_index_url,
+        "daily_send_time": config.daily_send_time,
+        "recovery_deadline": config.recovery_deadline,
+        "mask_log_friend_names": config.mask_log_friend_names,
     }
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
     os.replace(temporary, path)

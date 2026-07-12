@@ -2,6 +2,7 @@ import type {
   AppConfig,
   DashboardStatus,
   FriendDiscovery,
+  LogPage,
   PackCatalog,
   PackImportResult,
   PackPreview
@@ -45,7 +46,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ mode })
     }),
-  logs: () => request<{ application: string; scheduler: string }>("/api/logs"),
+  logs: (filters?: { start_date?: string; end_date?: string; level?: string; task_type?: string }) => {
+    const query = new URLSearchParams();
+    Object.entries(filters || {}).forEach(([key, value]) => { if (value) query.set(key, value); });
+    return request<LogPage>(`/api/logs${query.size ? `?${query}` : ""}`);
+  },
+  archiveLogs: (before: string) =>
+    request<{ archived_count: number; archive_dir: string }>(`/api/logs/archive?before=${encodeURIComponent(before)}`, { method: "POST" }),
+  checkRecovery: () =>
+    request<{ due: boolean; started: boolean; job?: ActionJob }>("/api/recovery/check", { method: "POST" }),
   action: (name: string) =>
     request<ActionJob>(`/api/actions/${name}`, {
       method: "POST"

@@ -13,3 +13,6 @@ message_suffix:
   text: "gpt小助手"
   style: dash
 message_pack_index_url:
+daily_send_time: "07:30"
+recovery_deadline: "23:59"
+mask_log_friend_names: true

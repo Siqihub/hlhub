@@ -1,9 +1,16 @@
-from pathlib import Path
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from autody.chat import ChatSelectors, DOUYIN_SELECTORS, DouyinChat, PageChangedError
+from autody.chat import (
+    ChatSelectors,
+    DOUYIN_CONFIRMATION_SELECTORS,
+    DOUYIN_SELECTORS,
+    DeliveryStatus,
+    DouyinChat,
+    normalize_message_text,
+)
 
 
 @pytest.fixture
@@ -15,15 +22,17 @@ def fake_chat(page, tmp_path: Path):
 
 
 def test_send_confirms_exact_target_and_message(page, fake_chat):
-    fake_chat.send("小明", "早安")
+    result = fake_chat.send("小明", "早安")
+    assert result.status is DeliveryStatus.CONFIRMED
     assert page.locator('[data-e2e="message-text"]', has_text="早安").count() == 1
 
 
-def test_existing_message_is_not_sent_twice(page, fake_chat):
+def test_existing_latest_message_is_not_sent_twice(page, fake_chat):
     page.locator('[data-e2e="message-list"]').evaluate(
         "(el) => { const p=document.createElement('p'); p.dataset.e2e='message-text'; p.textContent='早安'; el.append(p); }"
     )
-    fake_chat.send("小明", "早安")
+    result = fake_chat.send("小明", "早安")
+    assert result.send_attempts == 0
     assert page.locator('[data-e2e="message-text"]', has_text="早安").count() == 1
 
 
@@ -31,42 +40,40 @@ def test_duplicate_names_are_rejected(page, fake_chat):
     page.locator('[data-e2e="conversation-item"]').evaluate(
         "el => el.parentNode.appendChild(el.cloneNode(true))"
     )
-    with pytest.raises(RuntimeError, match="ambiguous"):
-        fake_chat.send("小明", "早安")
+    result = fake_chat.send("小明", "早安")
+    assert result.status is DeliveryStatus.SEND_FAILED
+    assert "ambiguous" in (result.error or "")
 
 
-def test_header_mismatch_is_rejected(page, fake_chat):
+def test_header_mismatch_is_blocked(page, fake_chat):
     page.set_default_timeout(300)
     page.locator('[data-e2e="chat-header-name"]').evaluate("el => el.textContent='小红'")
-    with pytest.raises(PageChangedError):
-        fake_chat.send("小明", "早安")
+    result = fake_chat.send("小明", "早安")
+    assert result.status is DeliveryStatus.BLOCKED
 
 
 def test_send_waits_for_header_to_switch_to_target(page, fake_chat):
     page.locator('[data-e2e="chat-header-name"]').evaluate(
         "el => { el.textContent='小红'; setTimeout(() => el.textContent='小明', 100); }"
     )
-    fake_chat.send("小明", "早安")
-    assert page.locator('[data-e2e="message-text"]', has_text="早安").count() == 1
+    assert fake_chat.send("小明", "早安").successful
 
 
-def test_production_selectors_scope_current_right_panel():
+def test_production_confirmation_selector_is_isolated_and_scoped():
     assert DOUYIN_SELECTORS.header_name == ".RightPanelHeadertitle"
-    assert DOUYIN_SELECTORS.message_text.startswith(
+    assert DOUYIN_CONFIRMATION_SELECTORS.outgoing_message_text.startswith(
         ".componentsRightPanelwrapper .MessageBoxContentactiveClickArea"
     )
+    assert not hasattr(DOUYIN_SELECTORS, "message_text")
 
 
 def test_conversation_preview_is_not_accepted_as_sent_message(page, tmp_path):
     page.goto((Path("tests/fixtures/chat.html").resolve()).as_uri())
-    page.set_default_timeout(300)
     page.locator("body").evaluate(
         "el => { const preview=document.createElement('pre'); preview.textContent='早安'; el.append(preview); }"
     )
-    chat = DouyinChat(
-        page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=0
-    )
-    chat.send("小明", "早安")
+    chat = DouyinChat(page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=0)
+    assert chat.send("小明", "早安").successful
     assert page.locator('[data-e2e="message-text"]', has_text="早安").count() == 1
 
 
@@ -77,8 +84,7 @@ def test_editor_container_uses_contenteditable_descendant(page, tmp_path):
     )
     selectors = replace(ChatSelectors.test_defaults(), input=".editor-wrapper")
     chat = DouyinChat(page, selectors, tmp_path, confirmation_delay_ms=0)
-    chat.send("小明", "早安")
-    assert page.get_by_text("早安", exact=True).count() == 1
+    assert chat.send("小明", "早安").successful
 
 
 def test_send_rejects_optimistic_bubble_that_disappears(page, tmp_path):
@@ -87,10 +93,15 @@ def test_send_rejects_optimistic_bubble_that_disappears(page, tmp_path):
         "el => el.addEventListener('keydown', event => { if (event.key === 'Enter') setTimeout(() => document.querySelector('.MessageItemTextisFromMe')?.remove(), 50); })"
     )
     chat = DouyinChat(
-        page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=150
+        page,
+        ChatSelectors.test_defaults(),
+        tmp_path,
+        confirmation_delay_ms=150,
+        confirmation_retries=1,
     )
-    with pytest.raises(RuntimeError, match="did not persist"):
-        chat.send("小明", "早安")
+    result = chat.send("小明", "早安")
+    assert result.status is DeliveryStatus.CONFIRMATION_FAILED
+    assert result.screenshot_path is not None
 
 
 def test_find_target_scrolls_conversation_list(page, tmp_path):
@@ -109,8 +120,32 @@ def test_find_target_scrolls_conversation_list(page, tmp_path):
           });
         }"""
     )
-    chat = DouyinChat(
-        page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=0
+    chat = DouyinChat(page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=0)
+    assert chat.send("小明", "早安").successful
+
+
+def test_confirmation_normalizes_whitespace_and_line_endings(page, tmp_path):
+    page.goto((Path("tests/fixtures/chat.html").resolve()).as_uri())
+    page.locator('[data-e2e="message-list"]').evaluate(
+        "(el) => { const p=document.createElement('p'); p.dataset.e2e='message-text'; p.textContent='你好\\n  gpt小助手'; el.append(p); }"
     )
-    chat.send("小明", "早安")
-    assert page.locator('[data-e2e="message-text"]', has_text="早安").count() == 1
+    chat = DouyinChat(page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=0)
+    result = chat.send("小明", "你好\r\ngpt小助手")
+    assert result.status is DeliveryStatus.CONFIRMED
+    assert result.send_attempts == 0
+    assert normalize_message_text("你好\r\n gpt小助手") == "你好 gpt小助手"
+
+
+def test_latest_outgoing_uses_visual_order_for_reversed_douyin_dom(page, tmp_path):
+    page.goto((Path("tests/fixtures/chat.html").resolve()).as_uri())
+    page.locator('[data-e2e="message-list"]').evaluate(
+        """el => {
+          el.style.position='relative'; el.style.height='240px';
+          const latest=document.createElement('p'); latest.dataset.e2e='message-text'; latest.textContent='最新消息'; latest.style.position='absolute'; latest.style.top='180px';
+          const old=document.createElement('p'); old.dataset.e2e='message-text'; old.textContent='旧消息'; old.style.position='absolute'; old.style.top='20px';
+          el.append(latest, old);
+        }"""
+    )
+    chat = DouyinChat(page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=0)
+
+    assert chat._latest_outgoing_text() == "最新消息"

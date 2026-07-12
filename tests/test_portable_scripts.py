@@ -46,12 +46,12 @@ def test_dashboard_launcher_and_shortcut_are_portable_and_use_icon():
     for token in [
         "WScript.Shell",
         "AutoDy 管理台.lnk",
-        "start-dashboard.cmd",
         "assets\\icons\\autody.ico",
         "AutoDy-重新登录.cmd",
         "AutoDy-需要处理.txt",
     ]:
         assert token in shortcut
+    assert "start-dashboard.cmd" in shortcut or "autody-dashboard.cmd" in shortcut
     assert "C:\\Users\\Administrator" not in shortcut
 
 

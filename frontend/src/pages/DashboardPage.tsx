@@ -10,6 +10,13 @@ const statusLabel = {
   pending: "待发送"
 };
 
+const triggerLabel = {
+  scheduled: "定时",
+  manual: "手动",
+  startup_recovery: "错过恢复",
+  retry: "补发"
+};
+
 export function DashboardPage({
   status,
   busy,
@@ -40,19 +47,26 @@ export function DashboardPage({
         </div>
       </header>
       <StatusRail status={status} />
+      <section className="stats-grid" aria-label="运行统计">
+        <article className="panel stat-card"><small>今日成功</small><strong>{status.statistics.successful_today}</strong><span>失败 {status.statistics.failed_today}</span></article>
+        <article className="panel stat-card"><small>连续成功</small><strong>{status.statistics.consecutive_successful_days} 天</strong><span>近 7 天 {status.statistics.success_rate_7d}%</span></article>
+        <article className="panel stat-card"><small>近 30 天成功率</small><strong>{status.statistics.success_rate_30d}%</strong><span>7 天重试 {status.statistics.retries_7d} 次</span></article>
+        <article className="panel stat-card"><small>本机资源</small><strong>{status.statistics.enabled_friend_count} 位好友</strong><span>{status.statistics.local_message_count} 条文案 · {status.statistics.active_message_pack_count} 个文案包</span></article>
+      </section>
       <div className="dashboard-grid">
         <section className="panel history-panel">
-          <div className="panel-heading"><h2>最近运行</h2><span>{status.history.length} 条记录</span></div>
+          <div className="panel-heading"><h2>结构化运行记录</h2><span>{status.history.length} 条记录</span></div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>日期</th><th>文案预览</th><th>成功/发送</th><th>状态</th></tr></thead>
+              <thead><tr><th>结束时间</th><th>来源</th><th>成功/总数</th><th>重试</th><th>状态</th></tr></thead>
               <tbody>
                 {status.history.slice(0, 7).map((row) => (
-                  <tr key={row.date}>
-                    <td>{row.date}</td>
-                    <td className="message-preview">{row.message || "尚未运行"}</td>
-                    <td>{row.succeeded}/{row.total}</td>
-                    <td><span className={row.complete ? "tag success" : "tag warning"}>{row.complete ? "成功" : "部分成功"}</span></td>
+                  <tr key={row.run_id}>
+                    <td>{new Date(row.end_time).toLocaleString("zh-CN")}</td>
+                    <td>{triggerLabel[row.trigger_source]}</td>
+                    <td>{row.success_count + row.skipped_count}/{row.total_targets}</td>
+                    <td>{row.retry_count}</td>
+                    <td><span className={row.final_status === "completed" || row.final_status === "already_done" ? "tag success" : "tag warning"}>{row.final_status === "completed" || row.final_status === "already_done" ? "成功" : "部分失败"}</span></td>
                   </tr>
                 ))}
               </tbody>

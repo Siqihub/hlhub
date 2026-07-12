@@ -50,6 +50,7 @@ def test_health_check_reports_success(tmp_path: Path, monkeypatch):
             return False
 
     monkeypatch.setattr("autody.cli.open_chat", lambda *args, **kwargs: Context())
+    monkeypatch.setattr("autody.cli.recovery_due", lambda *args, **kwargs: False)
     result = runner.invoke(
         app, ["health-check", "--config", str(tmp_path / "config.yaml")]
     )

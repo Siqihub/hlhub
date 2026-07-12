@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import time
 import zipfile
 
 from fastapi import FastAPI, File, HTTPException, Response, UploadFile
@@ -21,9 +22,11 @@ from autody.config import (
     save_config,
 )
 from autody.friend_discovery import load_discovered_friends
+from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, dashboard_statistics
+from autody.log_center import archive_logs, query_logs
 from autody.message_packs import ImportMode, MessagePackError, MessagePackService
 from autody.messages import read_messages
-from autody.logging_setup import read_daily_logs
+from autody.recovery import recovery_due
 from autody.state import StateStore
 from autody.web_actions import ActionAlreadyRunning, ActionManager
 
@@ -35,6 +38,9 @@ class ConfigUpdate(BaseModel):
     headless: bool
     message_suffix: MessageSuffixConfig = Field(default_factory=MessageSuffixConfig)
     message_pack_index_url: str | None = None
+    daily_send_time: str = Field(default="07:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    recovery_deadline: str = Field(default="23:59", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    mask_log_friend_names: bool = True
 
 
 class MessagesUpdate(BaseModel):
@@ -48,18 +54,32 @@ class MessagePackImportRequest(BaseModel):
 def _tail(path: Path, limit: int = 400) -> str:
     if not path.exists():
         return ""
-    return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:])
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        size = handle.tell()
+        handle.seek(max(0, size - 131_072))
+        text = handle.read().decode("utf-8", errors="replace")
+    return "\n".join(text.splitlines()[-limit:])
 
 
-def _login_status(log_text: str) -> str:
-    successful = log_text.rfind("登录状态和抖音聊天页正常")
-    failed = max(
-        log_text.rfind("登录健康检查失败"),
-        log_text.rfind("浏览器任务已安全停止"),
-    )
-    if successful < 0 and failed < 0:
+def _login_status(path: Path, log_dir: Path | None = None) -> str:
+    if not path.exists():
+        if log_dir is None:
+            return "unknown"
+        dated = sorted(log_dir.glob("autody-????-??-??.log"))
+        fallback = dated[-1] if dated else log_dir / "autody.log"
+        if not fallback.exists():
+            return "unknown"
+        text = _tail(fallback, 200)
+        successful = text.rfind("登录状态和抖音聊天页正常")
+        failed = max(text.rfind("登录健康检查失败"), text.rfind("浏览器任务已安全停止"))
+        if successful < 0 and failed < 0:
+            return "unknown"
+        return "failed" if failed > successful else "success"
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("status", "unknown"))
+    except (json.JSONDecodeError, OSError, TypeError):
         return "unknown"
-    return "failed" if failed > successful else "success"
 
 
 def _message_count(path: Path) -> int:
@@ -82,6 +102,9 @@ def _config_payload(config: AppConfig) -> dict:
         "headless": config.headless,
         "message_suffix": config.message_suffix.model_dump(mode="json"),
         "message_pack_index_url": config.message_pack_index_url,
+        "daily_send_time": config.daily_send_time,
+        "recovery_deadline": config.recovery_deadline,
+        "mask_log_friend_names": config.mask_log_friend_names,
     }
 
 
@@ -140,22 +163,33 @@ def _portable_config(config_path: Path, config: AppConfig) -> bytes:
         "headless": config.headless,
         "message_suffix": config.message_suffix.model_dump(mode="json"),
         "message_pack_index_url": config.message_pack_index_url,
+        "daily_send_time": config.daily_send_time,
+        "recovery_deadline": config.recovery_deadline,
+        "mask_log_friend_names": config.mask_log_friend_names,
     }
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False).encode("utf-8")
 
 
-def create_app(config_path: Path, action_runner=None) -> FastAPI:
+def create_app(config_path: Path, action_runner=None, now_provider=None) -> FastAPI:
     config_path = config_path.resolve()
     root = config_path.parent
     manager = ActionManager(root, config_path)
     run_action = action_runner or manager.start
+    current_time = now_provider or datetime.now
     app = FastAPI(title="AutoDy", docs_url=None, redoc_url=None)
+    task_cache: dict[str, object] = {"expires": 0.0, "rows": []}
+    recovery_attempted: set[str] = set()
+
+    def cached_task_rows() -> list[dict]:
+        if time.monotonic() >= float(task_cache["expires"]):
+            task_cache["rows"] = _task_rows()
+            task_cache["expires"] = time.monotonic() + 10
+        return list(task_cache["rows"])  # type: ignore[arg-type]
 
     @app.get("/api/status")
     def status(today: str | None = None):
         config = load_config(config_path)
         state = StateStore(config.state_file).load()
-        application_log = read_daily_logs(config.state_file.parent / "logs")
         key = today or date.today().isoformat()
         daily = state.daily.get(
             key, {"message": "", "succeeded": [], "failures": {}, "consumed": False}
@@ -178,18 +212,27 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
                     "error": failures.get(target.name),
                 }
             )
+        history_store = TaskHistoryStore(config.state_file.parent / "history" / "task-runs.jsonl")
+        bootstrap_legacy_daily_history(history_store, state.daily, len(config.targets))
+        history_page = history_store.query(page_size=30)
+        records = list(reversed(history_page.items))
         history = [
             {
-                "date": day,
-                "message": value.get("message", ""),
-                "succeeded": len(value.get("succeeded", [])),
-                "total": len(config.targets),
-                "failed": len(value.get("failures", {})),
-                "complete": bool(value.get("consumed")),
+                "run_id": item.run_id,
+                "date": item.date,
+                "task_type": item.task_type,
+                "trigger_source": item.trigger_source,
+                "success_count": item.success_count,
+                "failed_count": item.failed_count,
+                "skipped_count": item.skipped_count,
+                "total_targets": item.total_targets,
+                "retry_count": item.retry_count,
+                "final_status": item.final_status,
+                "end_time": item.end_time,
             }
-            for day, value in sorted(state.daily.items(), reverse=True)
+            for item in history_page.items
         ]
-        tasks = _task_rows()
+        tasks = cached_task_rows()
         message_count = _message_count(config.messages_file)
         next_run = next(
             (
@@ -199,7 +242,14 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
             ),
             None,
         )
-        login_status = _login_status(application_log)
+        next_health = next(
+            (task.get("next_run") for task in tasks if task.get("name") == "AutoDy-Health-Daily"),
+            None,
+        )
+        login_status = _login_status(
+            config.state_file.parent / "health.json",
+            config.state_file.parent / "logs",
+        )
         issues = []
         if login_status == "failed":
             issues.append({
@@ -237,6 +287,13 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
                 "explanation": "最近一次发送未全部完成，再次运行只补发失败目标。",
                 "action": "run", "action_label": "继续补发",
             })
+        latest_run = history_page.items[0] if history_page.items else None
+        if latest_run and "confirmation_failed" in latest_run.confirmation_results.values():
+            issues.append({
+                "id": "message_confirmation_failure", "status": "error",
+                "explanation": "最近一次发送存在未确认消息，再次运行只处理未完成目标。",
+                "action": "run", "action_label": "继续补发",
+            })
         if not config.message_pack_index_url:
             issues.append({
                 "id": "remote_library", "status": "warning",
@@ -250,6 +307,22 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
                 "explanation": _tail(notice, 8),
                 "action": "logs", "action_label": "查看日志",
             })
+        statistics = dashboard_statistics(records, date.fromisoformat(key))
+        try:
+            pack_count = len(json.loads((root / "message-packs" / "index.json").read_text(encoding="utf-8")).get("packs", []))
+        except (OSError, json.JSONDecodeError, TypeError):
+            pack_count = 0
+        statistics.update({
+            "successful_today": len(succeeded),
+            "failed_today": len(failures),
+            "configured_friend_count": len(config.targets),
+            "enabled_friend_count": len(config.targets),
+            "local_message_count": message_count,
+            "active_message_pack_count": pack_count,
+            "next_health_check": next_health,
+            "next_daily_send": next_run,
+            "most_recent_issue": issues[0]["explanation"] if issues else None,
+        })
         return {
             "today": {
                 "date": key,
@@ -266,6 +339,7 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
             "login": {"status": login_status},
             "message_count": message_count,
             "issues": issues,
+            "statistics": statistics,
         }
 
     @app.get("/api/config")
@@ -281,9 +355,48 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
         config.headless = payload.headless
         config.message_suffix = payload.message_suffix
         config.message_pack_index_url = payload.message_pack_index_url
+        config.daily_send_time = payload.daily_send_time
+        config.recovery_deadline = payload.recovery_deadline
+        config.mask_log_friend_names = payload.mask_log_friend_names
         config = AppConfig.model_validate(config.model_dump())
         save_config(config_path, config)
         return _config_payload(config)
+
+    @app.post("/api/recovery/check")
+    def check_startup_recovery():
+        config = load_config(config_path)
+        now = current_time()
+        key = now.date().isoformat()
+        due = recovery_due(config, StateStore(config.state_file).load(), now)
+        if not due or key in recovery_attempted:
+            return {"due": due, "started": False, "already_checked": key in recovery_attempted}
+        recovery_attempted.add(key)
+        try:
+            job = run_action("startup-recovery")
+        except ActionAlreadyRunning:
+            return {"due": True, "started": False, "already_checked": False}
+        return {"due": True, "started": True, "job": job}
+
+    @app.get("/api/history")
+    def task_history(
+        start_date: date | None = None,
+        end_date: date | None = None,
+        status_filter: str | None = None,
+        task_type: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ):
+        config = load_config(config_path)
+        return TaskHistoryStore(
+            config.state_file.parent / "history" / "task-runs.jsonl"
+        ).query(
+            start_date=start_date,
+            end_date=end_date,
+            status=status_filter,
+            task_type=task_type,
+            page=page,
+            page_size=page_size,
+        )
 
     @app.get("/api/messages")
     def get_messages():
@@ -359,13 +472,39 @@ def create_app(config_path: Path, action_runner=None) -> FastAPI:
         }
 
     @app.get("/api/logs")
-    def logs():
+    def logs(
+        start_date: date | None = None,
+        end_date: date | None = None,
+        level: str | None = None,
+        task_type: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ):
         config = load_config(config_path)
         log_dir = config.state_file.parent / "logs"
-        return {
-            "application": read_daily_logs(log_dir),
-            "scheduler": _tail(log_dir / "scheduler.log"),
-        }
+        page_result = query_logs(
+            log_dir,
+            config,
+            start_date=start_date,
+            end_date=end_date,
+            level=level,
+            task_type=task_type,
+            page=page,
+            page_size=page_size,
+        )
+        payload = page_result.model_dump(mode="json")
+        payload["application"] = "\n".join(
+            f"{item.timestamp} {item.level} {item.summary}\n{item.detail}".strip()
+            for item in reversed(page_result.items)
+        )
+        payload["scheduler"] = _tail(log_dir / "scheduler.log")
+        return payload
+
+    @app.post("/api/logs/archive")
+    def archive_application_logs(before: date):
+        config = load_config(config_path)
+        moved = archive_logs(config.state_file.parent / "logs", before)
+        return {"archived_count": len(moved), "archive_dir": str(config.state_file.parent / "logs" / "archive")}
 
     @app.get("/api/backup")
     def backup():

@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 import re
 from pathlib import Path
 
@@ -31,7 +32,6 @@ class ChatSelectors:
     conversation_list: str
     header_name: str
     input: str
-    message_text: str
     login_marker: str
     verification_marker: str
 
@@ -43,10 +43,39 @@ class ChatSelectors:
             '[data-e2e="chat-app"]',
             '[data-e2e="chat-header-name"]',
             '[data-e2e="chat-input"]',
-            '[data-e2e="message-text"]',
             '[data-e2e="conversation-item"]',
             "text=安全验证",
         )
+
+
+@dataclass(frozen=True)
+class ConfirmationSelectors:
+    outgoing_message_text: str
+
+    @classmethod
+    def test_defaults(cls):
+        return cls('[data-e2e="message-text"]')
+
+
+class DeliveryStatus(str, Enum):
+    CONFIRMED = "confirmed"
+    RETRY_CONFIRMED = "retry_confirmed"
+    SEND_FAILED = "send_failed"
+    CONFIRMATION_FAILED = "confirmation_failed"
+    BLOCKED = "blocked"
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    status: DeliveryStatus
+    send_attempts: int = 0
+    confirmation_attempts: int = 0
+    screenshot_path: Path | None = None
+    error: str | None = None
+
+    @property
+    def successful(self) -> bool:
+        return self.status in {DeliveryStatus.CONFIRMED, DeliveryStatus.RETRY_CONFIRMED}
 
 
 # Centralized selectors based on the current douyin.com/chat page and the upstream
@@ -57,10 +86,19 @@ DOUYIN_SELECTORS = ChatSelectors(
     conversation_list=".conversationConversationListwrapper",
     header_name=".RightPanelHeadertitle",
     input=".messageEditorimChatEditorContainer",
-    message_text=".componentsRightPanelwrapper .MessageBoxContentactiveClickArea .MessageItemTextisFromMe .TextMessageTextpureText",
     login_marker=".conversationConversationListwrapper",
     verification_marker="text=/安全验证|扫码登录|登录后即可聊天/",
 )
+
+# Delivery confirmation selectors are deliberately isolated from navigation and
+# editor selectors. A Douyin page change here must not alter friend search/send.
+DOUYIN_CONFIRMATION_SELECTORS = ConfirmationSelectors(
+    outgoing_message_text=".componentsRightPanelwrapper .MessageBoxContentactiveClickArea .MessageItemTextisFromMe .TextMessageTextpureText"
+)
+
+
+def normalize_message_text(value: str) -> str:
+    return " ".join(value.replace("\r\n", "\n").replace("\r", "\n").split())
 
 
 class DouyinChat:
@@ -69,20 +107,49 @@ class DouyinChat:
         page: Page,
         selectors: ChatSelectors,
         artifact_dir: Path,
+        confirmation_selectors: ConfirmationSelectors | None = None,
         confirmation_delay_ms: int = 2_000,
+        confirmation_retries: int = 2,
     ):
         self.page = page
         self.selectors = selectors
         self.artifact_dir = artifact_dir
+        self.confirmation_selectors = confirmation_selectors or (
+            ConfirmationSelectors.test_defaults()
+            if selectors.login_marker.startswith('[data-e2e=')
+            else DOUYIN_CONFIRMATION_SELECTORS
+        )
         self.confirmation_delay_ms = confirmation_delay_ms
+        self.confirmation_retries = confirmation_retries
 
-    def _message_locator(self, message: str):
-        return self.page.locator(self.selectors.message_text).filter(
-            has_text=re.compile(rf"^{re.escape(message)}$")
+    def _latest_outgoing_text(self) -> str | None:
+        messages = self.page.locator(self.confirmation_selectors.outgoing_message_text)
+        if messages.count() == 0:
+            return None
+        # Douyin renders the message list in reverse DOM order. Selecting by the
+        # largest visual bottom coordinate works for both normal and reversed
+        # lists and therefore reflects the latest visible outgoing bubble.
+        return messages.evaluate_all(
+            """elements => elements
+                .map(element => ({
+                    text: element.innerText || element.textContent || '',
+                    bottom: element.getBoundingClientRect().bottom
+                }))
+                .sort((left, right) => right.bottom - left.bottom)[0]?.text || null"""
         )
 
-    def _message_exists(self, message: str) -> bool:
-        return self._message_locator(message).count() > 0
+    def _latest_matches(self, message: str) -> bool:
+        latest = self._latest_outgoing_text()
+        return latest is not None and normalize_message_text(latest) == normalize_message_text(message)
+
+    def _confirm_delivery(self, message: str) -> tuple[DeliveryStatus | None, int]:
+        for attempt in range(1, self.confirmation_retries + 2):
+            if self.confirmation_delay_ms:
+                self.page.wait_for_timeout(self.confirmation_delay_ms)
+            if self._latest_matches(message):
+                status = DeliveryStatus.CONFIRMED if attempt == 1 else DeliveryStatus.RETRY_CONFIRMED
+                return status, attempt
+        return None, self.confirmation_retries + 1
 
     def _find_conversation(self, target: str):
         conversations = self.page.locator(self.selectors.conversation)
@@ -116,7 +183,7 @@ class DouyinChat:
             self.page.wait_for_timeout(250)
         return matches, matches.count()
 
-    def send(self, target: str, message: str) -> None:
+    def send(self, target: str, message: str) -> DeliveryResult:
         try:
             matches, count = self._find_conversation(target)
             if count == 0:
@@ -128,8 +195,12 @@ class DouyinChat:
                 has_text=re.compile(rf"^{re.escape(target)}$")
             )
             header.first.wait_for(state="visible")
-            if self._message_exists(message):
-                return
+            if self._latest_matches(message):
+                return DeliveryResult(
+                    DeliveryStatus.CONFIRMED,
+                    send_attempts=0,
+                    confirmation_attempts=1,
+                )
             editor_container = self.page.locator(self.selectors.input)
             editor_container.wait_for(state="visible")
             editable_child = editor_container.locator(
@@ -138,16 +209,32 @@ class DouyinChat:
             editor = editable_child.last if editable_child.count() else editor_container
             editor.fill(message)
             editor.press("Enter")
-            self._message_locator(message).last.wait_for()
-            self.page.wait_for_timeout(self.confirmation_delay_ms)
-            if not self._message_exists(message):
-                raise RuntimeError("sent message did not persist")
-        except RuntimeError:
-            self.screenshot("send-error")
-            raise
+            status, attempts = self._confirm_delivery(message)
+            if status:
+                return DeliveryResult(status, send_attempts=1, confirmation_attempts=attempts)
+            screenshot = self.screenshot("confirmation-failed")
+            return DeliveryResult(
+                DeliveryStatus.CONFIRMATION_FAILED,
+                send_attempts=1,
+                confirmation_attempts=attempts,
+                screenshot_path=screenshot,
+                error="latest outgoing message did not match the final sent message",
+            )
+        except RuntimeError as exc:
+            screenshot = self.screenshot("send-error")
+            return DeliveryResult(
+                DeliveryStatus.SEND_FAILED,
+                send_attempts=1,
+                screenshot_path=screenshot,
+                error=str(exc),
+            )
         except PlaywrightTimeoutError as exc:
-            self.screenshot("page-changed")
-            raise PageChangedError("Douyin chat page structure changed or timed out") from exc
+            screenshot = self.screenshot("page-changed")
+            return DeliveryResult(
+                DeliveryStatus.BLOCKED,
+                screenshot_path=screenshot,
+                error="Douyin chat page structure changed or timed out",
+            )
 
     def screenshot(self, label: str) -> Path:
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -202,13 +289,13 @@ def open_chat(
         page.goto(CHAT_URL)
         if page.locator(DOUYIN_SELECTORS.verification_marker).count():
             if artifact_dir:
-                DouyinChat(page, DOUYIN_SELECTORS, artifact_dir).screenshot("authentication")
+                DouyinChat(page, DOUYIN_SELECTORS, artifact_dir, DOUYIN_CONFIRMATION_SELECTORS).screenshot("authentication")
             raise AuthenticationError("login expired or security verification required")
         try:
             page.locator(DOUYIN_SELECTORS.login_marker).wait_for()
         except PlaywrightTimeoutError as exc:
             if artifact_dir:
-                DouyinChat(page, DOUYIN_SELECTORS, artifact_dir).screenshot("authentication")
+                DouyinChat(page, DOUYIN_SELECTORS, artifact_dir, DOUYIN_CONFIRMATION_SELECTORS).screenshot("authentication")
             raise AuthenticationError("Douyin login is unavailable; run autody login") from exc
         yield page
     finally:

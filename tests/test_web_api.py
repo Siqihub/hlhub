@@ -1,4 +1,5 @@
 from io import BytesIO
+from datetime import datetime
 import json
 from pathlib import Path
 import zipfile
@@ -6,6 +7,7 @@ import zipfile
 from fastapi.testclient import TestClient
 
 from autody.web_api import create_app
+from autody.history import TaskHistoryStore, TaskRunRecord
 
 
 def make_project(tmp_path: Path) -> Path:
@@ -149,6 +151,69 @@ def test_logs_and_backup_exclude_browser_profile(tmp_path: Path):
         "state.json",
     }
     assert "secret.cookie" not in "\n".join(archive.namelist())
+
+
+def test_startup_recovery_runs_once_after_send_time(tmp_path: Path):
+    config = make_project(tmp_path)
+    calls = []
+
+    def runner(action):
+        calls.append(action)
+        return {"id": "recovery", "action": action, "status": "running"}
+
+    client = TestClient(
+        create_app(
+            config,
+            action_runner=runner,
+            now_provider=lambda: datetime(2026, 7, 13, 8, 0),
+        )
+    )
+
+    first = client.post("/api/recovery/check").json()
+    second = client.post("/api/recovery/check").json()
+
+    assert first["started"] is True
+    assert second["started"] is False
+    assert calls == ["startup-recovery"]
+
+
+def test_startup_recovery_does_not_run_before_send_time(tmp_path: Path):
+    config = make_project(tmp_path)
+    calls = []
+    client = TestClient(
+        create_app(
+            config,
+            action_runner=lambda action: calls.append(action),
+            now_provider=lambda: datetime(2026, 7, 13, 7, 29),
+        )
+    )
+
+    response = client.post("/api/recovery/check").json()
+
+    assert response["due"] is False
+    assert calls == []
+
+
+def test_history_endpoint_filters_structured_runs(tmp_path: Path):
+    config = make_project(tmp_path)
+    store = TaskHistoryStore(tmp_path / "data" / "history" / "task-runs.jsonl")
+    store.append(
+        TaskRunRecord(
+            run_id="partial",
+            date="2026-07-13",
+            task_type="daily_send",
+            trigger_source="scheduled",
+            start_time="2026-07-13T07:30:00",
+            end_time="2026-07-13T07:31:00",
+            final_status="partial_failed",
+        )
+    )
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/history?status_filter=partial_failed").json()
+
+    assert response["total"] == 1
+    assert response["items"][0]["run_id"] == "partial"
 
 
 def test_backup_import_validates_and_restores(tmp_path: Path):

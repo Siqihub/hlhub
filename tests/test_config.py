@@ -52,3 +52,14 @@ def test_save_config_persists_suffix_and_remote_pack_url(tmp_path: Path):
     assert restored.message_suffix.text == "每日问候"
     assert restored.message_suffix.style is MessageSuffixStyle.BRACKET
     assert restored.message_pack_index_url == "https://example.com/index.json"
+
+
+def test_new_recovery_and_log_defaults_keep_old_config_compatible(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    path.write_text("targets:\n  - name: 小明\n", encoding="utf-8")
+
+    config = load_config(path)
+
+    assert config.daily_send_time == "07:30"
+    assert config.recovery_deadline == "23:59"
+    assert config.mask_log_friend_names is True

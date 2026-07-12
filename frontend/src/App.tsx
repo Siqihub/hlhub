@@ -17,7 +17,21 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const load = useCallback(() => void api.status().then(setStatus), []);
-  useEffect(() => { load(); const id = window.setInterval(load, 15000); return () => window.clearInterval(id); }, [load]);
+  useEffect(() => {
+    load();
+    const refresh = () => { if (!document.hidden) load(); };
+    const id = window.setInterval(refresh, 30000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", refresh); };
+  }, [load]);
+  useEffect(() => {
+    void api.checkRecovery().then(async (result) => {
+      if (result.started && result.job) {
+        await api.waitForAction(result.job.id);
+        load();
+      }
+    }).catch(() => undefined);
+  }, [load]);
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(""), 3200); };
   const action = async (name: string) => {
     setBusy(name);

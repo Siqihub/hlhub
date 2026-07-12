@@ -12,6 +12,7 @@ BROWSER_ACTIONS = {
     "login",
     "health-check",
     "scan-friends",
+    "startup-recovery",
     "repair-playwright",
 }
 
@@ -60,7 +61,24 @@ class ActionManager:
             return asdict(job) if job else None
 
     def _command(self, action: str) -> list[str]:
-        if action in {"run", "login", "health-check", "scan-friends", "repair-playwright"}:
+        if action == "startup-recovery":
+            return [
+                sys.executable,
+                "-m",
+                "autody.cli",
+                "run",
+                "--config",
+                str(self.config_path),
+                "--source",
+                "startup_recovery",
+            ]
+        if action in {
+            "run",
+            "login",
+            "health-check",
+            "scan-friends",
+            "repair-playwright",
+        }:
             return [
                 sys.executable,
                 "-m",

@@ -7,12 +7,17 @@ export interface Friend {
 }
 
 export interface HistoryRow {
+  run_id: string;
   date: string;
-  message: string;
-  succeeded: number;
-  total: number;
-  failed: number;
-  complete: boolean;
+  task_type: string;
+  trigger_source: "scheduled" | "manual" | "startup_recovery" | "retry";
+  success_count: number;
+  failed_count: number;
+  skipped_count: number;
+  total_targets: number;
+  retry_count: number;
+  final_status: string;
+  end_time: string;
 }
 
 export interface SchedulerTask {
@@ -39,6 +44,22 @@ export interface DashboardStatus {
   login: { status: string };
   message_count: number;
   issues: DashboardIssue[];
+  statistics: {
+    last_completed_run: string | null;
+    consecutive_successful_days: number;
+    success_rate_7d: number;
+    success_rate_30d: number;
+    retries_7d: number;
+    successful_today: number;
+    failed_today: number;
+    configured_friend_count: number;
+    enabled_friend_count: number;
+    local_message_count: number;
+    active_message_pack_count: number;
+    next_health_check: string | null;
+    next_daily_send: string | null;
+    most_recent_issue: string | null;
+  };
 }
 
 export interface DashboardIssue {
@@ -62,6 +83,29 @@ export interface AppConfig {
     style: MessageSuffixStyle;
   };
   message_pack_index_url: string | null;
+  daily_send_time: string;
+  recovery_deadline: string;
+  mask_log_friend_names: boolean;
+}
+
+export interface LogEntry {
+  timestamp: string;
+  date: string;
+  level: "INFO" | "WARNING" | "ERROR";
+  task_type: string;
+  summary: string;
+  detail: string;
+  source: string;
+}
+
+export interface LogPage {
+  items: LogEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+  start_date: string;
+  end_date: string;
+  scheduler: string;
 }
 
 export interface MessagePack {

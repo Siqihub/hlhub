@@ -7,7 +7,8 @@ vi.mock("../api", () => ({
     config: vi.fn().mockResolvedValue({
       targets: [], retry_count: 3, timeout_ms: 30000, headless: true,
       message_suffix: { enabled: true, text: "gpt小助手", style: "dash" },
-      message_pack_index_url: null
+      message_pack_index_url: null,
+      daily_send_time: "07:30", recovery_deadline: "23:59", mask_log_friend_names: true
     }),
     saveConfig: vi.fn()
   }
