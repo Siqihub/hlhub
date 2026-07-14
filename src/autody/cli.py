@@ -25,7 +25,6 @@ from autody.friend_discovery import (
     is_discovery_stale,
     load_discovered_friends,
     record_discovery_failure,
-    refresh_configured_avatars,
 )
 from autody.locking import SingleInstanceLock, TaskAlreadyRunning
 from autody.logging_setup import setup_logging
@@ -271,8 +270,9 @@ def scan_friends(
 def refresh_friend_avatars(
     config: Path = typer.Option(Path("config.yaml"), "--config"),
 ):
-    """扫描聊天列表并仅更新已配置好友的本地头像缓存。"""
+    """按候选稳定身份重新扫描并校正本地头像关联。"""
     loaded = load_config(config)
+    discovery_path = loaded.state_file.parent / "discovered_friends.json"
     try:
         with SingleInstanceLock(loaded.lock_file):
             configure_runtime(_project_root(config))
@@ -284,18 +284,16 @@ def refresh_friend_avatars(
                 loaded.artifact_dir,
                 home=_project_root(config),
             ) as page:
-                result = refresh_configured_avatars(
+                result = discover_friends(
                     loaded,
                     page,
                     DOUYIN_SELECTORS,
-                    loaded.state_file.parent / "avatar-cache",
+                    discovery_path,
+                    force_avatar_refresh=True,
                 )
             if result.config_changed:
                 save_config(config, loaded)
-            message = (
-                f"头像更新完成：更新 {result.updated} 个，未找到 {result.missing} 个，"
-                f"存在重名 {result.ambiguous} 个。"
-            )
+            message = f"头像校正完成：更新 {result.last_result.get('avatars_updated', 0)} 个，失败 {result.last_result.get('avatars_failed', 0)} 个。"
             logging.info(message)
             typer.echo(message)
     except TaskAlreadyRunning:

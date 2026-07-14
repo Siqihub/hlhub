@@ -200,6 +200,10 @@ export interface FriendCandidate {
   avatar_status: "cached" | "missing";
   discovered_at: string;
   match_status: "configured" | "unconfigured" | "ambiguous";
+  configured?: boolean;
+  target_id?: string | null;
+  enabled?: boolean | null;
+  stale?: boolean;
   configured_target_id: string | null;
   configured_enabled: boolean | null;
   avatar_cache_key?: string | null;
@@ -228,6 +232,7 @@ export interface FriendDiscovery {
 
 export interface ConfiguredFriend {
   id: string | null;
+  target_id: string | null;
   display_name: string;
   enabled: boolean;
   note: string;

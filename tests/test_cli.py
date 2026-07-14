@@ -189,7 +189,7 @@ def test_rejected_daily_run_keeps_existing_send_activity_marker(tmp_path: Path, 
     assert marker.is_file()
 
 
-def test_refresh_friend_avatars_only_scans_and_persists_missing_stable_id(
+def test_refresh_friend_avatars_uses_identity_safe_discovery_correction(
     tmp_path: Path, monkeypatch
 ):
     (tmp_path / "messages.txt").write_text("早安\n", encoding="utf-8")
@@ -203,17 +203,27 @@ def test_refresh_friend_avatars_only_scans_and_persists_missing_stable_id(
         def __exit__(self, *_args):
             return False
 
-    def refresh(loaded, *_args):
+    calls = []
+
+    def discover(loaded, _page, _selectors, output, **kwargs):
+        calls.append((output, kwargs))
         loaded.targets[0].stable_id = "friend-xiaoming"
-        return AvatarRefreshResult(updated=1, missing=0, ambiguous=0, config_changed=True)
+        return FriendDiscoveryResult(
+            "2026-07-05T08:00:00",
+            [],
+            output,
+            config_changed=True,
+            last_result={"avatars_updated": 1, "avatars_failed": 0},
+        )
 
     monkeypatch.setattr("autody.cli.open_chat", lambda *_args, **_kwargs: Context())
-    monkeypatch.setattr("autody.cli.refresh_configured_avatars", refresh, raising=False)
+    monkeypatch.setattr("autody.cli.discover_friends", discover)
 
     result = runner.invoke(app, ["refresh-friend-avatars", "--config", str(config)])
 
     assert result.exit_code == 0
-    assert "头像更新完成：更新 1 个，未找到 0 个，存在重名 0 个。" in result.stdout
+    assert "头像校正完成：更新 1 个，失败 0 个。" in result.stdout
+    assert calls[0][1]["force_avatar_refresh"] is True
     assert "stable_id: friend-xiaoming" in config.read_text(encoding="utf-8")
 
 

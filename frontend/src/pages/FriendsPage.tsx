@@ -1,4 +1,4 @@
-import { Plus, Radar, RefreshCw, Save, Trash2, UserPlus } from "lucide-react";
+import { Radar, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { AppConfig, ConfiguredFriend, FriendDiscovery } from "../types";
@@ -17,19 +17,19 @@ function todayLabel(status: ConfiguredFriend["today_status"] | undefined) {
 
 function candidateLabel(candidate: FriendDiscovery["candidates"][number]) {
   if (candidate.presence_status === "stale") return "历史候选 · 未在本次扫描中出现";
-  const { match_status: status, configured_enabled: enabled } = candidate;
+  const { match_status: status, enabled } = candidate;
   if (status === "ambiguous") return "可能重名，未自动关联";
-  if (status === "configured") return enabled ? "已配置 · 已启用" : "已配置 · 已停用";
-  return "未配置";
+  if (candidate.configured || status === "configured") return enabled ? "已添加 · 已启用" : "已添加 · 已停用";
+  return "点击添加到续火目标";
 }
 
 export function FriendsPage({ notify }: { notify: (message: string) => void }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [friends, setFriends] = useState<ConfiguredFriend[]>([]);
   const [discovery, setDiscovery] = useState<FriendDiscovery | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchSelected, setBatchSelected] = useState<Set<string>>(() => new Set());
   const [busyAction, setBusyAction] = useState<"scan" | "avatar" | null>(null);
+  const [addingCandidateId, setAddingCandidateId] = useState<string | null>(null);
   const refreshWasRunning = useRef(false);
 
   const load = async () => {
@@ -64,21 +64,6 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
   }, [discovery?.last_result, discovery?.refresh_running, notify]);
   if (!config) return <div className="loading">加载好友配置…</div>;
 
-  const friendByName = new Map(friends.map((friend) => [friend.display_name, friend]));
-
-  const save = async () => {
-    const names = config.targets.map((name) => name.trim()).filter(Boolean);
-    if (new Set(names).size !== names.length) return notify("好友名称不能重复");
-    try {
-      const saved = await api.saveConfig({ ...config, targets: names });
-      setConfig(saved);
-      setFriends((await api.friends()).friends);
-      notify("好友配置已保存");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "好友配置保存失败");
-    }
-  };
-
   const scan = async () => {
     setBusyAction("scan");
     try {
@@ -86,7 +71,6 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
       const finished = await api.waitForAction(job.id);
       if (finished.status === "failed") throw new Error("好友识别失败，请查看运行日志");
       await load();
-      setSelected(new Set());
       notify("好友识别完成，候选列表已更新");
     } catch (error) {
       notify(error instanceof Error ? error.message : "好友识别失败");
@@ -102,7 +86,7 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
       const finished = await api.waitForAction(job.id);
       if (finished.status === "failed") throw new Error("头像更新失败，请查看运行日志");
       await load();
-      notify("头像扫描完成，未修改好友名称或续火目标");
+      notify("头像校正完成，未修改好友名称或续火目标");
     } catch (error) {
       notify(error instanceof Error ? error.message : "头像更新失败");
     } finally {
@@ -110,15 +94,42 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
     }
   };
 
-  const addSelected = async () => {
-    if (!selected.size) return;
+  const addCandidate = async (candidate: FriendDiscovery["candidates"][number]) => {
+    if (candidate.configured || candidate.presence_status === "stale" || addingCandidateId) return;
+    setAddingCandidateId(candidate.candidate_id);
     try {
-      const result = await api.addDiscoveredFriends([...selected]);
-      await load();
-      setSelected(new Set());
-      notify(`已添加 ${result.added} 位候选${result.skipped ? `，跳过 ${result.skipped} 位` : ""}`);
+      const result = await api.addCandidateToTargets(candidate.candidate_id);
+      setDiscovery((current) => current ? {
+        ...current,
+        candidates: current.candidates.map((item) => item.candidate_id === candidate.candidate_id ? {
+          ...item,
+          match_status: "configured",
+          configured: true,
+          target_id: result.target.target_id,
+          configured_target_id: result.target.target_id,
+          enabled: result.target.enabled,
+          configured_enabled: result.target.enabled
+        } : item)
+      } : current);
+      setFriends((current) => current.some((friend) => friend.target_id === result.target.target_id || friend.id === result.target.target_id) ? current : [
+        ...current,
+        {
+          id: result.target.target_id,
+          target_id: result.target.target_id,
+          display_name: result.target.display_name,
+          enabled: result.target.enabled,
+          note: "",
+          avatar_url: candidate.avatar_url,
+          avatar_status: candidate.avatar_status,
+          today_status: "pending",
+          last_success_date: null
+        }
+      ]);
+      notify(result.created ? "已添加" : "已添加");
     } catch (error) {
       notify(error instanceof Error ? error.message : "添加候选好友失败");
+    } finally {
+      setAddingCandidateId(null);
     }
   };
 
@@ -141,39 +152,43 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
         <div><h1>好友管理</h1><p>扫描仅读取当前聊天列表并缓存本地缩略头像；不会上传头像，也不会自动修改昵称。</p></div>
         <div className="header-actions">
           <button className="action-button" disabled={busyAction !== null} onClick={() => void scan()}><Radar size={17} />{busyAction === "scan" ? "扫描中…" : "扫描好友"}</button>
-          <button className="action-button" disabled={busyAction !== null} onClick={() => void refreshAvatars()}><RefreshCw size={17} />{busyAction === "avatar" ? "更新中…" : "扫描并更新头像"}</button>
-          <button className="action-button primary" onClick={() => void save()}><Save size={17} />保存修改</button>
+          <button className="action-button" disabled={busyAction !== null} onClick={() => void refreshAvatars()}><RefreshCw size={17} />{busyAction === "avatar" ? "校正中…" : "重新扫描并校正头像"}</button>
         </div>
       </header>
 
       <div className="panel form-panel">
-        <div className="panel-heading"><h2>续火目标</h2><span className="inline-actions"><button className="text-button" onClick={() => void batch("enable")}>批量启用</button><button className="text-button" onClick={() => void batch("disable")}>批量停用</button><button className="text-button" onClick={() => void batch("delete")}>批量删除</button><button className="text-button" onClick={() => setConfig({ ...config, targets: [...config.targets, ""] })}><Plus size={16} />添加好友</button></span></div>
+        <div className="panel-heading"><h2>续火目标</h2><span className="inline-actions"><button className="text-button" onClick={() => void batch("enable")}>批量启用</button><button className="text-button" onClick={() => void batch("disable")}>批量停用</button><button className="text-button" onClick={() => void batch("delete")}>批量删除</button></span></div>
         <div className="friend-editor-list">
-          {config.targets.map((name, index) => {
-            const friend = friendByName.get(name);
-            return <div className="friend-editor-row" key={`${index}-${name}`}>
-              <input className="row-check" aria-label={`选择 ${name}`} type="checkbox" checked={batchSelected.has(name)} onChange={(event) => { const next = new Set(batchSelected); if (event.target.checked) next.add(name); else next.delete(name); setBatchSelected(next); }} />
-              <FriendAvatar name={name} url={friend?.avatar_url} />
+          {friends.map((friend, index) => {
+            const targetId = friend.target_id || friend.id;
+            if (!targetId) return null;
+            return <div className="friend-editor-row" key={targetId}>
+              <input className="row-check" aria-label={`选择 ${friend.display_name}`} type="checkbox" checked={batchSelected.has(targetId)} onChange={(event) => { const next = new Set(batchSelected); if (event.target.checked) next.add(targetId); else next.delete(targetId); setBatchSelected(next); }} />
+              <FriendAvatar name={friend.display_name} url={friend.avatar_url} />
               <span className="row-number">{index + 1}</span>
               <div className="friend-editor-copy">
-                <input value={name} placeholder="输入好友备注或昵称" onChange={(event) => { const targets = [...config.targets]; targets[index] = event.target.value; setConfig({ ...config, targets }); }} />
-                <small>{friend ? `${friend.enabled ? "已启用" : "已停用"} · ${todayLabel(friend.today_status)}${friend.last_success_date ? ` · 最近成功 ${friend.last_success_date}` : ""}` : "未扫描头像 · 今日待执行"}</small>
+                <strong>{friend.display_name}</strong>
+                <small>{`${friend.enabled ? "已启用" : "已停用"} · ${todayLabel(friend.today_status)}${friend.last_success_date ? ` · 最近成功 ${friend.last_success_date}` : ""}`}</small>
               </div>
-              <button className="icon-button danger" aria-label={`删除 ${name}`} onClick={() => setConfig({ ...config, targets: config.targets.filter((_, position) => position !== index) })}><Trash2 size={17} /></button>
+              <button className="icon-button danger" aria-label={`删除 ${friend.display_name}`} onClick={() => void api.friendBatch([targetId], "delete").then(load)}><Trash2 size={17} /></button>
             </div>;
           })}
         </div>
       </div>
 
       {discovery ? <section className="panel discovery-panel">
-        <div className="panel-heading"><div><h2>识别到的候选好友</h2><small className="discovery-status">候选好友来自本地缓存{discovery.scanned_at ? ` · 上次扫描：${discovery.scanned_at.replace("T", " ")}` : ""}{discovery.stale ? " · 缓存待更新" : " · 缓存当前"}</small>{discovery.refresh_running ? <small className="discovery-progress">正在后台更新候选好友和头像…</small> : null}</div><button className="text-button" disabled={!selected.size} onClick={() => void addSelected()}><UserPlus size={16} />添加所选好友</button></div>
-        <div className="candidate-grid">{discovery.candidates.map((candidate) => {
-          const selectable = candidate.match_status === "unconfigured" && candidate.presence_status !== "stale";
-          return <label className={selectable ? "candidate" : "candidate configured"} key={candidate.candidate_id}>
-            <input type="checkbox" aria-label={`选择 ${candidate.display_name}`} disabled={!selectable} checked={selected.has(candidate.candidate_id)} onChange={(event) => { const next = new Set(selected); if (event.target.checked) next.add(candidate.candidate_id); else next.delete(candidate.candidate_id); setSelected(next); }} />
+        <div className="panel-heading"><div><h2>识别到的候选好友</h2><small className="discovery-status">候选好友来自本地缓存{discovery.scanned_at ? ` · 上次扫描：${discovery.scanned_at.replace("T", " ")}` : ""}{discovery.stale ? " · 缓存待更新" : " · 缓存当前"}</small>{discovery.refresh_running ? <small className="discovery-progress">正在后台更新候选好友和头像…</small> : null}</div></div>
+        <div className="candidate-grid">{[...discovery.candidates].sort((left, right) => {
+          const group = (candidate: FriendDiscovery["candidates"][number]) => candidate.presence_status === "stale" ? 2 : candidate.configured ? 1 : 0;
+          return group(left) - group(right);
+        }).map((candidate) => {
+          const configured = candidate.configured || candidate.match_status === "configured";
+          const canAdd = !configured && candidate.presence_status !== "stale" && candidate.match_status !== "ambiguous";
+          const adding = addingCandidateId === candidate.candidate_id;
+          return <button type="button" className={canAdd ? "candidate" : "candidate configured"} key={candidate.candidate_id} aria-label={`添加 ${candidate.display_name}`} disabled={!canAdd || adding} onClick={() => void addCandidate(candidate)}>
             <FriendAvatar name={candidate.display_name} url={candidate.avatar_url} />
-            <span>{candidate.display_name}</span><small>{candidateLabel(candidate)}</small>
-          </label>;
+            <span>{candidate.display_name}</span><small>{adding ? "添加中…" : configured ? "已添加" : candidateLabel(candidate)}</small>
+          </button>;
         })}</div>
       </section> : null}
     </section>

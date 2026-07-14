@@ -83,6 +83,10 @@ export const api = {
   discoveredFriends: () =>
     request<FriendDiscovery>("/api/friends/discovered"),
   friends: () => request<{ friends: ConfiguredFriend[] }>("/api/friends"),
+  addCandidateToTargets: (candidateId: string) =>
+    request<{ created: boolean; target: { target_id: string; display_name: string; enabled: boolean } }>(`/api/friends/${encodeURIComponent(candidateId)}/add-to-targets`, {
+      method: "POST"
+    }),
   addDiscoveredFriends: (candidateIds: string[]) =>
     request<{ added: number; skipped: number }>("/api/friends/discovered/batch", {
       method: "POST",
@@ -105,7 +109,7 @@ export const api = {
     if (!response.ok) throw new Error(await response.text());
     return response.blob();
   },
-  friendBatch: (names: string[], action: "enable" | "disable" | "delete") => request<{ affected: number }>("/api/friends/batch", { method: "PATCH", body: JSON.stringify({ names, action }) }),
+  friendBatch: (targetIds: string[], action: "enable" | "disable" | "delete") => request<{ affected: number }>("/api/friends/batch", { method: "PATCH", body: JSON.stringify({ target_ids: targetIds, action }) }),
   previewMessageImport: (file: File) => upload<{ total_entries: number; valid_entries: number; exact_duplicates: number; empty_entries: number; overly_long_entries: number; entries_with_links: number }>("/api/messages/import/preview", file),
   importMessages: (file: File, mode: "merge" | "replace") => upload<{ imported: number; duplicated: number; total: number }>(`/api/messages/import?mode=${mode}`, file),
   deduplicateMessages: () => request<{ removed: number }>("/api/messages/deduplicate", { method: "POST" })

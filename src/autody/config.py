@@ -61,10 +61,11 @@ class AppConfig(BaseModel):
     @model_validator(mode="after")
     def unique_targets(self):
         names = [target.name.strip() for target in self.targets]
-        if len(names) != len(set(names)):
-            raise ValueError("target names must be unique")
         for target, name in zip(self.targets, names, strict=True):
             target.name = name
+        stable_ids = [target.stable_id for target in self.targets if target.stable_id]
+        if len(stable_ids) != len(set(stable_ids)):
+            raise ValueError("target stable IDs must be unique")
         if self.message_pack_index_url is not None:
             self.message_pack_index_url = self.message_pack_index_url.strip() or None
         if self.recovery_deadline < self.daily_send_time:

@@ -9,7 +9,7 @@ const apiMocks = vi.hoisted(() => ({
   scanFriends: vi.fn(),
   refreshFriendAvatars: vi.fn(),
   waitForAction: vi.fn(),
-  addDiscoveredFriends: vi.fn(),
+  addCandidateToTargets: vi.fn(),
   friendBatch: vi.fn(),
   saveConfig: vi.fn()
 }));
@@ -38,11 +38,13 @@ const discovered = {
     {
       candidate_id: "friend-xiaoming", display_name: "小明", avatar_url: "/api/avatars/friend-xiaoming",
       avatar_status: "cached" as const, discovered_at: "2026-07-04T12:30:00", match_status: "configured" as const,
+      configured: true, target_id: "friend-xiaoming", enabled: true,
       configured_target_id: "friend-xiaoming", configured_enabled: true
     },
     {
       candidate_id: "candidate-new", display_name: "新朋友", avatar_url: "/api/avatars/candidate-new",
       avatar_status: "cached" as const, discovered_at: "2026-07-04T12:30:00", match_status: "unconfigured" as const,
+      configured: false, target_id: null, enabled: null,
       configured_target_id: null, configured_enabled: null
     }
   ]
@@ -62,7 +64,10 @@ beforeEach(() => {
   apiMocks.scanFriends.mockResolvedValue({ id: "scan-1", action: "scan-friends", status: "running" });
   apiMocks.refreshFriendAvatars.mockResolvedValue({ id: "avatar-1", action: "refresh-friend-avatars", status: "running" });
   apiMocks.waitForAction.mockResolvedValue({ id: "scan-1", action: "scan-friends", status: "success" });
-  apiMocks.addDiscoveredFriends.mockResolvedValue({ added: 1, skipped: 0 });
+  apiMocks.addCandidateToTargets.mockResolvedValue({
+    created: true,
+    target: { target_id: "candidate-new", display_name: "新朋友", enabled: true }
+  });
   apiMocks.friendBatch.mockResolvedValue({ affected: 1 });
   apiMocks.saveConfig.mockResolvedValue(config);
 });
@@ -72,7 +77,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-test("shows local avatars, supports selecting a discovered friend, and removes standalone transfer controls", async () => {
+test("shows local avatars, adds a discovered friend on click, and removes candidate checkboxes", async () => {
   render(<FriendsPage notify={vi.fn()} />);
 
   expect((await screen.findAllByAltText("小明 的头像"))[0]).toHaveAttribute("loading", "lazy");
@@ -81,19 +86,20 @@ test("shows local avatars, supports selecting a discovered friend, and removes s
   expect(screen.getByText(/候选好友来自本地缓存/)).toBeInTheDocument();
   expect(screen.getByText("正在后台更新候选好友和头像…")).toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole("button", { name: "扫描好友" }));
-  const candidate = await screen.findByRole("checkbox", { name: "选择 新朋友" });
+  expect(screen.queryByRole("checkbox", { name: "选择 新朋友" })).not.toBeInTheDocument();
+  const candidate = await screen.findByRole("button", { name: "添加 新朋友" });
   fireEvent.click(candidate);
-  fireEvent.click(screen.getByRole("button", { name: "添加所选好友" }));
 
-  await waitFor(() => expect(apiMocks.addDiscoveredFriends).toHaveBeenCalledWith(["candidate-new"]));
-  expect(screen.getByAltText("新朋友 的头像")).toHaveAttribute("loading", "lazy");
+  await waitFor(() => expect(apiMocks.addCandidateToTargets).toHaveBeenCalledWith("candidate-new"));
+  expect((await screen.findAllByText("已添加")).length).toBeGreaterThan(0);
+  expect(screen.getByRole("button", { name: "添加 新朋友" })).toBeDisabled();
+  expect((await screen.findAllByAltText("新朋友 的头像")).every((avatar) => avatar.getAttribute("loading") === "lazy")).toBe(true);
 });
 
 
-test("starts the avatar-only scan without a send action", async () => {
+test("starts the avatar-correction scan without a send action", async () => {
   render(<FriendsPage notify={vi.fn()} />);
-  fireEvent.click(await screen.findByRole("button", { name: "扫描并更新头像" }));
+  fireEvent.click(await screen.findByRole("button", { name: "重新扫描并校正头像" }));
 
   await waitFor(() => expect(apiMocks.refreshFriendAvatars).toHaveBeenCalledTimes(1));
   expect(apiMocks.scanFriends).not.toHaveBeenCalled();

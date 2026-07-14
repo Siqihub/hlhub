@@ -57,8 +57,9 @@ class FakeTextLocator:
 
 
 class FakeAvatarLocator:
-    def __init__(self, content: bytes | None):
+    def __init__(self, content: bytes | None, source: str | None = None):
         self.content = content
+        self.source = source
 
     @property
     def first(self):
@@ -69,18 +70,38 @@ class FakeAvatarLocator:
             raise RuntimeError("avatar unavailable")
         Path(path).write_bytes(self.content)
 
+    def get_attribute(self, attribute: str):
+        return self.source if attribute == "src" else None
+
 
 class FakeConversationItem:
-    def __init__(self, selectors: ChatSelectors, name: str, avatar: bytes | None):
+    def __init__(
+        self,
+        selectors: ChatSelectors,
+        name: str,
+        avatar: bytes | None,
+        row_id: str | None = None,
+        avatar_source: str | None = None,
+    ):
         self.selectors = selectors
         self.name = name
         self.avatar = avatar
+        self.row_id = row_id
+        self.avatar_source = avatar_source
+
+    def get_attribute(self, attribute: str):
+        if attribute in {"data-conversation-id", "data-id", "data-key"}:
+            return self.row_id
+        return None
+
+    def inner_text(self):
+        return self.name
 
     def locator(self, selector: str):
         if selector == self.selectors.conversation_name:
             return FakeTextLocator(self.name)
         if selector == "img":
-            return FakeAvatarLocator(self.avatar)
+            return FakeAvatarLocator(self.avatar, self.avatar_source)
         raise AssertionError(f"unexpected item selector: {selector}")
 
 
@@ -228,6 +249,82 @@ def test_duplicate_nickname_does_not_overwrite_configured_avatar(tmp_path: Path)
     assert avatar_path.read_bytes() == b"original"
 
 
+def test_duplicate_nickname_rows_keep_stable_ids_and_avatars_after_reorder(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+    output = tmp_path / "data" / "discovered_friends.json"
+    cache = tmp_path / "data" / "avatar-cache"
+    first = discover_friends(
+        AppConfig(),
+        FakePage(
+            selectors,
+            [[
+                FakeConversationItem(selectors, "同名", b"avatar-a", "conversation-a"),
+                FakeConversationItem(selectors, "同名", b"avatar-b", "conversation-b"),
+            ]],
+        ),
+        selectors,
+        output,
+        avatar_cache_dir=cache,
+        now=lambda: datetime(2026, 7, 4, 8, 0, 0),
+    )
+    first_ids = [item.candidate_id for item in first.candidates]
+
+    second = discover_friends(
+        AppConfig(),
+        FakePage(
+            selectors,
+            [[
+                FakeConversationItem(selectors, "同名", b"avatar-b-new", "conversation-b"),
+                FakeConversationItem(selectors, "同名", b"avatar-a-new", "conversation-a"),
+            ]],
+        ),
+        selectors,
+        output,
+        avatar_cache_dir=cache,
+        force_avatar_refresh=True,
+        now=lambda: datetime(2026, 7, 5, 8, 0, 0),
+    )
+    assert len(set(first_ids)) == 2
+    assert [item.candidate_id for item in second.candidates] == list(reversed(first_ids))
+    assert (cache / f"{second.candidates[0].avatar_cache_key}.png").read_bytes() == b"avatar-b-new"
+    assert (cache / f"{second.candidates[1].avatar_cache_key}.png").read_bytes() == b"avatar-a-new"
+
+
+def test_avatar_source_identity_is_preferred_when_rows_lack_conversation_ids(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+    output = tmp_path / "data" / "discovered_friends.json"
+    first = discover_friends(
+        AppConfig(),
+        FakePage(
+            selectors,
+            [[
+                FakeConversationItem(selectors, "同名", b"avatar-a", avatar_source="https://avatar/a"),
+                FakeConversationItem(selectors, "同名", b"avatar-b", avatar_source="https://avatar/b"),
+            ]],
+        ),
+        selectors,
+        output,
+    )
+    second = discover_friends(
+        AppConfig(),
+        FakePage(
+            selectors,
+            [[
+                FakeConversationItem(selectors, "同名", b"avatar-b-new", avatar_source="https://avatar/b"),
+                FakeConversationItem(selectors, "同名", b"avatar-a-new", avatar_source="https://avatar/a"),
+            ]],
+        ),
+        selectors,
+        output,
+        force_avatar_refresh=True,
+    )
+
+    assert [candidate.candidate_id for candidate in second.candidates] == list(
+        reversed([candidate.candidate_id for candidate in first.candidates])
+    )
+    assert {candidate.identity_source for candidate in second.candidates} == {"avatar_source"}
+
+
 def test_discovery_preserves_candidate_identity_and_marks_missed_rows_stale(tmp_path: Path):
     selectors = ChatSelectors.test_defaults()
     output = tmp_path / "data" / "discovered_friends.json"
@@ -300,7 +397,7 @@ def test_fresh_cached_avatar_is_reused_without_overwriting_it(tmp_path: Path):
     current = datetime.now()
     first = discover_friends(
         AppConfig(),
-        FakePage(selectors, [[FakeConversationItem(selectors, "缓存头像", b"first-avatar")]]),
+        FakePage(selectors, [[FakeConversationItem(selectors, "缓存头像", b"first-avatar", "cached-row")]]),
         selectors,
         output,
         avatar_cache_dir=cache,
@@ -309,7 +406,7 @@ def test_fresh_cached_avatar_is_reused_without_overwriting_it(tmp_path: Path):
     avatar = cache / f"{first.candidates[0].candidate_id}.png"
     second = discover_friends(
         AppConfig(),
-        FakePage(selectors, [[FakeConversationItem(selectors, "缓存头像", b"new-avatar")]]),
+        FakePage(selectors, [[FakeConversationItem(selectors, "缓存头像", b"new-avatar", "cached-row")]]),
         selectors,
         output,
         avatar_cache_dir=cache,
@@ -328,7 +425,7 @@ def test_automatic_scan_does_not_recapture_a_fresh_cached_avatar(tmp_path: Path)
     current = datetime.now()
     discover_friends(
         AppConfig(),
-        FakePage(selectors, [[FakeConversationItem(selectors, "免重抓", b"avatar")]]),
+        FakePage(selectors, [[FakeConversationItem(selectors, "免重抓", b"avatar", "fresh-row")]]),
         selectors,
         output,
         avatar_cache_dir=cache,
@@ -353,7 +450,7 @@ def test_automatic_scan_does_not_recapture_a_fresh_cached_avatar(tmp_path: Path)
 
     discover_friends(
         AppConfig(),
-        FakePage(selectors, [[CachedItem(selectors, "免重抓", b"unused")]]),
+        FakePage(selectors, [[CachedItem(selectors, "免重抓", b"unused", "fresh-row")]]),
         selectors,
         output,
         avatar_cache_dir=cache,

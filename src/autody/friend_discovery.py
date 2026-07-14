@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,13 @@ from autody.config import AppConfig, Target
 _SAFE_LOCAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 DISCOVERY_CACHE_TTL = timedelta(hours=24)
 AVATAR_CACHE_TTL = timedelta(days=7)
+_ROW_ID_ATTRIBUTES = (
+    "data-conversation-id",
+    "data-im-conversation-id",
+    "data-id",
+    "data-key",
+)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,8 @@ class FriendCandidate:
     last_seen_at: str | None = None
     last_scan_id: str | None = None
     presence_status: str = "current"
+    identity_key: str | None = None
+    identity_source: str | None = None
 
     @property
     def name(self) -> str:
@@ -70,6 +80,9 @@ class _ScannedItem:
     name: str
     temporary_avatar: Path | None
     avatar_hash: str | None
+    identity_key: str | None
+    identity_source: str | None
+    row_index: int
     capture_attempted: bool = True
 
 
@@ -102,23 +115,62 @@ def _capture_temporary_avatar(item, cache_dir: Path) -> tuple[Path | None, str |
         return None, None
 
 
+def _opaque_identity(source: str, value: str) -> str:
+    digest = hashlib.sha256(f"{source}\0{value}".encode("utf-8")).hexdigest()
+    return f"{source}:{digest}"
+
+
+def _row_identity_hint(item) -> tuple[str | None, str | None]:
+    """Return an opaque row identity without persisting Douyin DOM data or URLs."""
+    for attribute in _ROW_ID_ATTRIBUTES:
+        try:
+            value = item.get_attribute(attribute)
+        except Exception:
+            value = None
+        if value:
+            return _opaque_identity("row", str(value)), "row_attribute"
+    # Douyin's visible chat rows currently do not expose a per-conversation DOM
+    # id.  The row's avatar source is, however, tied to that same rendered row
+    # and is less volatile than the complete DOM markup (unread markers and
+    # timestamps change the markup during a scan).  Persist only its digest.
+    try:
+        source = item.locator("img").first.get_attribute("src")
+    except Exception:
+        source = None
+    if source:
+        return _opaque_identity("avatar", str(source)), "avatar_source"
+    try:
+        markup = item.evaluate("el => el.outerHTML")
+    except Exception:
+        markup = None
+    if markup:
+        return _opaque_identity("row", str(markup)), "row_fingerprint"
+    return None, None
+
+
+def _candidate_id(identity_key: str | None) -> str:
+    if identity_key:
+        return f"candidate-{hashlib.sha256(identity_key.encode('utf-8')).hexdigest()[:32]}"
+    return _new_local_id("candidate")
+
+
 def _scan_items(
     page,
     selectors: ChatSelectors,
     cache_dir: Path,
     max_scrolls: int = 20,
-    capture_avatar: Callable[[str], bool] | None = None,
+    capture_avatar: Callable[[str | None], bool] | None = None,
 ) -> list[_ScannedItem]:
     """Read visible conversation rows while keeping avatar failures non-fatal."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     conversations = page.locator(selectors.conversation)
     scrollable = page.locator(selectors.conversation_list)
     items: list[_ScannedItem] = []
-    seen: set[tuple[str, str | None]] = set()
+    seen: set[str] = set()
     missing_counts: Counter[str] = Counter()
 
     for _ in range(max_scrolls + 1):
-        visible: list[tuple[object, str]] = []
+        visible: list[tuple[object, str, str | None, str | None, int]] = []
         for index in range(conversations.count()):
             item = conversations.nth(index)
             try:
@@ -127,35 +179,44 @@ def _scan_items(
                 continue
             if not name:
                 continue
-            visible.append((item, name))
-        visible_counts = Counter(name for _, name in visible)
-        for item, name in visible:
+            identity_key, identity_source = _row_identity_hint(item)
+            visible.append((item, name, identity_key, identity_source, index))
+        for item, name, identity_key, identity_source, row_index in visible:
             should_capture = (
                 capture_avatar is None
-                or capture_avatar(name)
-                or visible_counts[name] > 1
+                or capture_avatar(identity_key)
             )
             if should_capture:
                 temporary, avatar_hash = _capture_temporary_avatar(item, cache_dir)
             else:
                 temporary, avatar_hash = None, None
-            # A rendered avatar distinguishes same-named rows without persisting a
-            # remote URL. If capture fails, retain occurrences so they can be shown
-            # as ambiguous instead of silently choosing a nickname match.
-            signature = (name, avatar_hash)
-            if avatar_hash is not None and signature in seen:
+            if identity_key is None and avatar_hash is not None:
+                identity_key = _opaque_identity("pixels", f"{name}\0{avatar_hash}")
+                identity_source = "avatar_pixels"
+            if identity_key is None:
+                # There is no safe durable identity, so keep this row distinct
+                # instead of merging it with another same-name conversation.
+                missing_counts[name] += 1
+                identity_key = _opaque_identity(
+                    "unresolved", f"{name}\0{missing_counts[name]}\0{uuid.uuid4().hex}"
+                )
+                identity_source = "unresolved"
+            if identity_key in seen:
                 if temporary:
                     temporary.unlink(missing_ok=True)
                 continue
-            if avatar_hash is None and should_capture:
-                missing_counts[name] += 1
-                signature = (name, f"missing-{missing_counts[name]}")
-            elif avatar_hash is None:
-                signature = (name, "cached-without-capture")
-                if signature in seen:
-                    continue
-            seen.add(signature)
-            items.append(_ScannedItem(name, temporary, avatar_hash, should_capture))
+            seen.add(identity_key)
+            items.append(
+                _ScannedItem(
+                    name,
+                    temporary,
+                    avatar_hash,
+                    identity_key,
+                    identity_source,
+                    row_index,
+                    should_capture,
+                )
+            )
 
         if not scrollable.count():
             break
@@ -191,9 +252,10 @@ def _publish_avatar(
     cache_dir: Path,
     identifier: str,
     now: datetime,
+    force: bool = False,
 ) -> tuple[str | None, str, bool]:
     destination = _avatar_path(cache_dir, identifier)
-    refresh_needed = _avatar_needs_refresh(destination, now)
+    refresh_needed = force or _avatar_needs_refresh(destination, now)
     if temporary is not None and refresh_needed:
         try:
             os.replace(temporary, destination)
@@ -247,28 +309,17 @@ def scan_friend_names(
     return names
 
 
-def _fresh_avatar_names(
-    config: AppConfig,
+def _fresh_avatar_identities(
     previous: FriendDiscoveryResult | None,
     cache_dir: Path,
     now: datetime,
 ) -> set[str]:
     fresh: set[str] = set()
-    for target in config.targets:
-        if target.stable_id and _SAFE_LOCAL_ID.fullmatch(target.stable_id):
-            if not _avatar_needs_refresh(_avatar_path(cache_dir, target.stable_id), now):
-                fresh.add(target.name)
     for candidate in previous.candidates if previous else []:
-        if candidate.match_status == "ambiguous":
-            continue
-        cache_key = (
-            candidate.configured_target_id
-            if candidate.match_status == "configured"
-            else candidate.avatar_cache_key or candidate.candidate_id
-        )
-        if cache_key and _SAFE_LOCAL_ID.fullmatch(cache_key):
+        cache_key = candidate.avatar_cache_key or candidate.configured_target_id or candidate.candidate_id
+        if candidate.identity_key and _SAFE_LOCAL_ID.fullmatch(cache_key):
             if not _avatar_needs_refresh(_avatar_path(cache_dir, cache_key), now):
-                fresh.add(candidate.display_name)
+                fresh.add(candidate.identity_key)
     return fresh
 
 
@@ -284,72 +335,95 @@ def discover_friends(
     cache_dir = avatar_cache_dir or output_path.parent / "avatar-cache"
     previous = load_discovered_friends(output_path)
     scanned_now = (now or datetime.now)()
-    fresh_avatar_names = (
+    fresh_avatar_identities = (
         set()
         if force_avatar_refresh
-        else _fresh_avatar_names(config, previous, cache_dir, scanned_now)
+        else _fresh_avatar_identities(previous, cache_dir, scanned_now)
     )
     scanned = _scan_items(
         page,
         selectors,
         cache_dir,
-        capture_avatar=lambda name: name not in fresh_avatar_names,
+        capture_avatar=lambda identity_key: identity_key not in fresh_avatar_identities,
     )
     scanned_at = scanned_now.isoformat(timespec="seconds")
     scan_id = _new_local_id("scan")
-    by_name: dict[str, list[_ScannedItem]] = defaultdict(list)
-    for item in scanned:
-        by_name[item.name].append(item)
-    targets = {target.name: target for target in config.targets}
-    previous_by_name: dict[str, list[FriendCandidate]] = defaultdict(list)
-    for candidate in previous.candidates if previous else []:
-        previous_by_name[candidate.display_name].append(candidate)
+    scanned_name_counts = Counter(item.name for item in scanned)
+    targets_by_id = {
+        target.stable_id: target
+        for target in config.targets
+        if target.stable_id and _SAFE_LOCAL_ID.fullmatch(target.stable_id)
+    }
+    previous_by_identity = {
+        candidate.identity_key: candidate
+        for candidate in (previous.candidates if previous else [])
+        if candidate.identity_key
+    }
+    legacy_by_name: dict[str, list[FriendCandidate]] = defaultdict(list)
+    for candidate in (previous.candidates if previous else []):
+        if not candidate.identity_key:
+            legacy_by_name[candidate.display_name].append(candidate)
     config_changed = False
     candidates: list[FriendCandidate] = []
     seen_previous_ids: set[str] = set()
+    bound_target_ids: set[str] = set()
     avatars_updated = avatars_reused = avatars_failed = configured_matched = new_candidates = 0
 
     try:
         for item in scanned:
-            target = targets.get(item.name)
-            duplicate = len(by_name[item.name]) > 1
-            matching_previous = [
-                candidate
-                for candidate in previous_by_name[item.name]
-                if candidate.candidate_id not in seen_previous_ids
-            ]
-            prior = matching_previous[0] if not duplicate and len(matching_previous) == 1 else None
+            prior = previous_by_identity.get(item.identity_key)
+            if prior is None and scanned_name_counts[item.name] == 1:
+                legacy_matches = legacy_by_name.get(item.name, [])
+                if len(legacy_matches) == 1 and legacy_matches[0].candidate_id not in seen_previous_ids:
+                    prior = legacy_matches[0]
             candidate_id = (
                 prior.candidate_id
                 if prior and _SAFE_LOCAL_ID.fullmatch(prior.candidate_id)
-                else _new_local_id("candidate")
+                else _candidate_id(item.identity_key)
             )
-            configured_target_id = None
-            configured_enabled = None
-            if target is not None:
-                config_changed = _ensure_target_id(target) or config_changed
-                configured_target_id = target.stable_id
-                configured_enabled = target.enabled
-            if target is not None and not duplicate:
-                candidate_id = candidate_id if prior else configured_target_id or candidate_id
-                cache_id = configured_target_id or candidate_id
-                match_status = "configured"
+            target = targets_by_id.get(candidate_id)
+            if target is None and scanned_name_counts[item.name] == 1:
+                name_matches = [
+                    candidate_target
+                    for candidate_target in config.targets
+                    if candidate_target.name == item.name
+                    and candidate_target.stable_id not in bound_target_ids
+                ]
+                if len(name_matches) == 1:
+                    target = name_matches[0]
+                    if target.stable_id and _SAFE_LOCAL_ID.fullmatch(target.stable_id):
+                        candidate_id = target.stable_id
+                    else:
+                        target.stable_id = candidate_id
+                        config_changed = True
+                    targets_by_id[candidate_id] = target
+                    bound_target_ids.add(candidate_id)
+                else:
+                    unbound = [
+                        target
+                        for target in config.targets
+                        if not target.stable_id and target.name == item.name
+                    ]
+                    if len(unbound) != 1:
+                        unbound = []
+                    if unbound:
+                        target = unbound[0]
+                        target.stable_id = candidate_id
+                        targets_by_id[candidate_id] = target
+                        bound_target_ids.add(candidate_id)
+                        config_changed = True
+            configured_target_id = target.stable_id if target else None
+            configured_enabled = target.enabled if target else None
+            cache_id = configured_target_id or (prior.avatar_cache_key if prior and prior.avatar_cache_key else candidate_id)
+            match_status = "configured" if target else "unconfigured"
+            if target:
                 configured_matched += 1
-            elif duplicate:
-                cache_id = candidate_id
-                match_status = "ambiguous"
-            else:
-                cache_id = (
-                    prior.avatar_cache_key
-                    if prior and prior.avatar_cache_key and _SAFE_LOCAL_ID.fullmatch(prior.avatar_cache_key)
-                    else candidate_id
-                )
-                match_status = "unconfigured"
             avatar_cache_path, avatar_status, avatar_updated = _publish_avatar(
                 item.temporary_avatar,
                 cache_dir,
                 cache_id,
                 scanned_now,
+                force_avatar_refresh,
             )
             if avatar_updated:
                 avatars_updated += 1
@@ -361,6 +435,15 @@ def discover_friends(
                 new_candidates += 1
             else:
                 seen_previous_ids.add(prior.candidate_id)
+            logger.debug(
+                "friend discovery row candidate=%s name=%s row=%s avatar_key=%s source=%s association=%s",
+                candidate_id,
+                f"{item.name[:1]}***",
+                item.row_index,
+                cache_id,
+                item.identity_source,
+                match_status,
+            )
             candidates.append(
                 FriendCandidate(
                     candidate_id=candidate_id,
@@ -377,21 +460,18 @@ def discover_friends(
                     last_seen_at=scanned_at,
                     last_scan_id=scan_id,
                     presence_status="current",
+                    identity_key=item.identity_key,
+                    identity_source=item.identity_source,
                 )
             )
 
         for candidate in previous.candidates if previous else []:
             if candidate.candidate_id in seen_previous_ids:
                 continue
-            target = targets.get(candidate.display_name)
-            configured_target_id = candidate.configured_target_id
-            configured_enabled = candidate.configured_enabled
-            match_status = candidate.match_status
-            if target is not None:
-                config_changed = _ensure_target_id(target) or config_changed
-                configured_target_id = target.stable_id
-                configured_enabled = target.enabled
-                match_status = "configured"
+            target = targets_by_id.get(candidate.candidate_id)
+            configured_target_id = target.stable_id if target else None
+            configured_enabled = target.enabled if target else None
+            match_status = "configured" if target else "unconfigured"
             candidates.append(
                 replace(
                     candidate,
@@ -495,6 +575,8 @@ def _candidate_from_payload(item: object, scanned_at: str) -> FriendCandidate:
         last_seen_at=str(item.get("last_seen_at", scanned_at)),
         last_scan_id=(str(item["last_scan_id"]) if item.get("last_scan_id") else None),
         presence_status=str(item.get("presence_status", "current")),
+        identity_key=(str(item["identity_key"]) if item.get("identity_key") else None),
+        identity_source=(str(item["identity_source"]) if item.get("identity_source") else None),
     )
 
 

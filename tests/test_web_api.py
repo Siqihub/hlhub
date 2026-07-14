@@ -468,6 +468,69 @@ def test_discovered_candidate_batch_add_keeps_its_cached_avatar_and_friend_state
     assert friend["last_success_date"] is None
 
 
+def test_candidate_add_is_idempotent_by_candidate_id_and_keeps_duplicate_names_separate(
+    tmp_path: Path,
+):
+    config = make_project(tmp_path)
+    discovered = tmp_path / "data" / "discovered_friends.json"
+    discovered.write_text(
+        json.dumps(
+            {
+                "scanned_at": "2026-07-04T12:30:00",
+                "candidates": [
+                    {
+                        "candidate_id": "candidate-a",
+                        "identity_key": "row:conversation-a",
+                        "display_name": "同名候选",
+                        "avatar_cache_key": "candidate-a",
+                        "avatar_status": "cached",
+                        "discovered_at": "2026-07-04T12:30:00",
+                        "match_status": "unconfigured",
+                    },
+                    {
+                        "candidate_id": "candidate-b",
+                        "identity_key": "row:conversation-b",
+                        "display_name": "同名候选",
+                        "avatar_cache_key": "candidate-b",
+                        "avatar_status": "cached",
+                        "discovered_at": "2026-07-04T12:30:00",
+                        "match_status": "unconfigured",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    cache = tmp_path / "data" / "avatar-cache"
+    cache.mkdir(parents=True)
+    (cache / "candidate-a.png").write_bytes(b"avatar-a")
+    (cache / "candidate-b.png").write_bytes(b"avatar-b")
+    client = TestClient(create_app(config))
+
+    first = client.post("/api/friends/candidate-a/add-to-targets")
+    repeated = client.post("/api/friends/candidate-a/add-to-targets")
+    second = client.post("/api/friends/candidate-b/add-to-targets")
+    discovered_after_add = client.get("/api/friends/discovered").json()["candidates"]
+    friends = client.get("/api/friends").json()["friends"]
+    removed = client.patch("/api/friends/batch", json={"target_ids": ["candidate-a"], "action": "delete"})
+    discovered_after_remove = client.get("/api/friends/discovered").json()["candidates"]
+
+    assert first.status_code == 200
+    assert first.json()["created"] is True
+    assert repeated.status_code == 200
+    assert repeated.json()["created"] is False
+    assert second.status_code == 200
+    assert second.json()["created"] is True
+    assert [
+        friend["target_id"] for friend in friends
+        if friend["target_id"] in {"candidate-a", "candidate-b"}
+    ] == ["candidate-a", "candidate-b"]
+    assert [candidate["configured"] for candidate in discovered_after_add] == [True, True]
+    assert removed.json()["affected"] == 1
+    assert [candidate["configured"] for candidate in discovered_after_remove] == [False, True]
+
+
 def test_refresh_avatars_starts_only_the_safe_browser_scan(tmp_path: Path):
     calls = []
     client = TestClient(

@@ -30,9 +30,26 @@ def test_allows_empty_targets_for_first_run_and_discovery(tmp_path: Path):
     assert load_config(path).targets == []
 
 
-def test_rejects_duplicate_targets(tmp_path: Path):
+def test_allows_duplicate_target_names_when_their_stable_ids_differ(tmp_path: Path):
     path = tmp_path / "config.yaml"
-    path.write_text("targets:\n  - name: 小明\n  - name: 小明\n", encoding="utf-8")
+    path.write_text(
+        "targets:\n  - name: 小明\n    stable_id: candidate-a\n"
+        "  - name: 小明\n    stable_id: candidate-b\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert [target.stable_id for target in config.targets] == ["candidate-a", "candidate-b"]
+
+
+def test_rejects_duplicate_stable_target_ids(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "targets:\n  - name: 小明\n    stable_id: candidate-a\n"
+        "  - name: 小红\n    stable_id: candidate-a\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(ValidationError):
         load_config(path)

@@ -1,3 +1,4 @@
+from collections import defaultdict
 from datetime import date, datetime
 from io import BytesIO, StringIO
 import csv
@@ -90,6 +91,7 @@ class BackupExportRequest(BaseModel):
 
 
 class FriendBatchUpdate(BaseModel):
+    target_ids: list[str] = Field(default_factory=list)
     names: list[str] = Field(default_factory=list)
     action: str = Field(pattern=r"^(enable|disable|delete)$")
 
@@ -495,8 +497,13 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     @app.put("/api/config")
     def update_config(payload: ConfigUpdate):
         config = load_config(config_path)
-        existing = {target.name: target for target in config.targets}
-        config.targets = [existing.get(name, Target(name=name)) for name in payload.targets]
+        existing: dict[str, list[Target]] = defaultdict(list)
+        for target in config.targets:
+            existing[target.name].append(target)
+        config.targets = [
+            existing[name].pop(0) if existing[name] else Target(name=name)
+            for name in payload.targets
+        ]
         for field_name, value in payload.model_dump().items():
             if field_name != "targets":
                 if field_name == "message_suffix":
@@ -710,7 +717,11 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                 "last_result": {},
                 "candidates": [],
             }
-        targets = {target.name: target for target in config.targets}
+        targets = {
+            target.stable_id: target
+            for target in config.targets
+            if target.stable_id and _avatar_id(target.stable_id)
+        }
         return {
             "scanned_at": result.scanned_at,
             "stale": stale,
@@ -720,32 +731,22 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                 {
                     "candidate_id": candidate.candidate_id,
                     "display_name": candidate.display_name,
-                    "avatar_url": _avatar_url(
-                        candidate.configured_target_id
-                        if candidate.match_status == "configured"
-                        else candidate.avatar_cache_key or candidate.candidate_id,
-                        candidate.avatar_updated_at,
-                    ),
+                    "avatar_url": _avatar_url(candidate.avatar_cache_key or candidate.candidate_id, candidate.avatar_updated_at),
+                    "avatar_version": candidate.avatar_updated_at,
                     "avatar_status": candidate.avatar_status,
                     "discovered_at": candidate.discovered_at,
-                    "match_status": (
-                        "ambiguous"
-                        if candidate.match_status == "ambiguous"
-                        else "configured"
-                        if candidate.display_name in targets
-                        else "unconfigured"
-                    ),
-                    "configured_target_id": targets[candidate.display_name].stable_id
-                    if candidate.display_name in targets
-                    else None,
-                    "configured_enabled": targets[candidate.display_name].enabled
-                    if candidate.display_name in targets
-                    else None,
+                    "match_status": "configured" if candidate.candidate_id in targets else candidate.match_status,
+                    "configured": candidate.candidate_id in targets,
+                    "target_id": candidate.candidate_id if candidate.candidate_id in targets else None,
+                    "enabled": targets[candidate.candidate_id].enabled if candidate.candidate_id in targets else None,
+                    "configured_target_id": candidate.candidate_id if candidate.candidate_id in targets else None,
+                    "configured_enabled": targets[candidate.candidate_id].enabled if candidate.candidate_id in targets else None,
                     "avatar_updated_at": candidate.avatar_updated_at,
                     "first_discovered_at": candidate.first_discovered_at,
                     "last_seen_at": candidate.last_seen_at,
                     "last_scan_id": candidate.last_scan_id,
                     "presence_status": candidate.presence_status,
+                    "stale": candidate.presence_status == "stale",
                 }
                 for candidate in result.candidates
             ],
@@ -779,7 +780,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         avatar_versions = {
             identifier: candidate.avatar_updated_at
             for candidate in (discovered.candidates if discovered else [])
-            for identifier in [candidate.configured_target_id or candidate.candidate_id]
+            for identifier in [candidate.candidate_id]
             if candidate.avatar_updated_at
         }
         friends = []
@@ -789,6 +790,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             friends.append(
                 {
                     "id": identifier,
+                    "target_id": identifier,
                     "display_name": target.name,
                     "enabled": target.enabled,
                     "note": target.note,
@@ -809,14 +811,15 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         if result is None:
             raise HTTPException(409, "请先扫描好友")
         candidates = {candidate.candidate_id: candidate for candidate in result.candidates}
-        existing = {target.name for target in config.targets}
+        existing = {target.stable_id for target in config.targets if target.stable_id}
         added = skipped = 0
         for candidate_id in dict.fromkeys(payload.candidate_ids):
             candidate = candidates.get(candidate_id)
             if (
                 candidate is None
                 or candidate.match_status == "ambiguous"
-                or candidate.display_name in existing
+                or candidate.presence_status == "stale"
+                or candidate.candidate_id in existing
                 or not _avatar_id(candidate.candidate_id)
             ):
                 skipped += 1
@@ -824,11 +827,52 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             config.targets.append(
                 Target(name=candidate.display_name, stable_id=candidate.candidate_id)
             )
-            existing.add(candidate.display_name)
+            existing.add(candidate.candidate_id)
             added += 1
         if added:
             save_config(config_path, config)
         return {"added": added, "skipped": skipped}
+
+    @app.post("/api/friends/{candidate_id}/add-to-targets")
+    def add_candidate_to_targets(candidate_id: str):
+        config = load_config(config_path)
+        result = load_discovered_friends(
+            config.state_file.parent / "discovered_friends.json"
+        )
+        if result is None:
+            raise HTTPException(409, "请先扫描好友")
+        candidate = next(
+            (item for item in result.candidates if item.candidate_id == candidate_id),
+            None,
+        )
+        if candidate is None or candidate.presence_status == "stale":
+            raise HTTPException(404, "未找到可添加的候选好友")
+        existing = next(
+            (target for target in config.targets if target.stable_id == candidate_id),
+            None,
+        )
+        if existing is not None:
+            return {
+                "created": False,
+                "target": {
+                    "target_id": existing.stable_id,
+                    "display_name": existing.name,
+                    "enabled": existing.enabled,
+                },
+            }
+        if candidate.match_status == "ambiguous" or not _avatar_id(candidate.candidate_id):
+            raise HTTPException(409, "该候选好友缺少可安全使用的身份标识")
+        target = Target(name=candidate.display_name, stable_id=candidate.candidate_id)
+        config.targets.append(target)
+        save_config(config_path, config)
+        return {
+            "created": True,
+            "target": {
+                "target_id": target.stable_id,
+                "display_name": target.name,
+                "enabled": target.enabled,
+            },
+        }
 
     @app.post("/api/friends/refresh-avatars", status_code=202)
     def refresh_friend_avatars():
@@ -840,16 +884,21 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     @app.patch("/api/friends/batch")
     def update_friends_batch(payload: FriendBatchUpdate):
         config = load_config(config_path)
+        target_ids = set(payload.target_ids)
         names = set(payload.names)
         affected = 0
         if payload.action == "delete":
             before = len(config.targets)
-            config.targets = [target for target in config.targets if target.name not in names]
+            config.targets = [
+                target
+                for target in config.targets
+                if target.stable_id not in target_ids and target.name not in names
+            ]
             affected = before - len(config.targets)
         else:
             enabled = payload.action == "enable"
             for target in config.targets:
-                if target.name in names:
+                if target.stable_id in target_ids or target.name in names:
                     target.enabled = enabled
                     affected += 1
         save_config(config_path, config)

@@ -130,12 +130,12 @@ input:focus, textarea:focus, select:focus { border-color: #5797ef; box-shadow: 0
 .pack-preview li { padding: 5px 0; color: #47566d; font-size: 12px; break-inside: avoid; }
 .discovery-panel { margin-top: 14px; overflow: hidden; }
 .candidate-grid { padding: 15px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
-.candidate { min-height: 58px; padding: 9px 11px; display: grid; grid-template-columns: 18px 40px 1fr; gap: 3px 8px; align-items: center; border: 1px solid #e2e8ef; border-radius: 8px; cursor: pointer; }
-.candidate input { width: 16px; margin: 0; }
+.candidate { min-height: 58px; padding: 9px 11px; display: grid; grid-template-columns: 40px 1fr; gap: 3px 8px; align-items: center; border: 1px solid #e2e8ef; border-radius: 8px; cursor: pointer; background: #fff; text-align: left; }
+.candidate:hover:not(:disabled) { border-color: #90b8e8; background: #f5f9ff; }
 .candidate span { font-size: 12px; font-weight: 650; }
-.candidate small { grid-column: 3; color: #8190a4; font-size: 10px; }
+.candidate small { grid-column: 2; color: #8190a4; font-size: 10px; }
 .candidate .friend-avatar { grid-row: 1 / span 2; }
-.candidate.configured { opacity: .6; background: #f7f9fc; cursor: default; }
+.candidate.configured { opacity: .55; background: #f7f9fc; cursor: default; }
 .discovery-status, .discovery-progress { display: block; margin-top: 3px; color: #8190a4; font-size: 10px; }
 .discovery-progress { color: #287bd4; }
 .scheduler-list { overflow: hidden; }
