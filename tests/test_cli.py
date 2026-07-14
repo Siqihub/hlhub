@@ -235,3 +235,16 @@ def test_ui_starts_local_server(tmp_path: Path, monkeypatch):
     )
     assert result.exit_code == 0
     assert calls == [{"host": "127.0.0.1", "port": 9876, "log_level": "warning"}]
+
+
+def test_dry_run_starts_without_browser_or_state_mutation(tmp_path: Path, monkeypatch):
+    (tmp_path / "messages.txt").write_text("早安\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text("targets:\n  - name: 小明\nmessages_file: messages.txt\n", encoding="utf-8")
+    monkeypatch.setattr("autody.cli.open_chat", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("browser must stay closed")))
+
+    result = runner.invoke(app, ["run", "--config", str(config), "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "未打开浏览器，未发送消息" in result.stdout
+    assert not (tmp_path / "data" / "state.json").exists()

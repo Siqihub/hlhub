@@ -10,6 +10,7 @@ $LogDir = Join-Path $Root "data\logs"
 $Log = Join-Path $LogDir "scheduler.log"
 $NotificationDir = Join-Path $Root "data\notifications"
 $Alert = Join-Path $NotificationDir "need-attention.txt"
+$NotificationsEnabled = -not ((Get-Content -Raw $Config -ErrorAction SilentlyContinue) -match '(?m)^completion_notifications_enabled:\s*false\s*$')
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $NotificationDir | Out-Null
@@ -46,13 +47,15 @@ $Log
 如果提示登录失效，请打开桌面的 AutoDy 管理台查看“需要处理”。
 "@
     $message | Set-Content -Encoding UTF8 $Alert
-    Add-Type -AssemblyName PresentationFramework
-    [System.Windows.MessageBox]::Show(
-        $message,
-        "AutoDy 需要处理",
-        "OK",
-        "Warning"
-    ) | Out-Null
+    if ($NotificationsEnabled) {
+        Add-Type -AssemblyName PresentationFramework
+        [System.Windows.MessageBox]::Show(
+            $message,
+            "AutoDy 需要处理",
+            "OK",
+            "Warning"
+        ) | Out-Null
+    }
 } elseif (Test-Path $Alert) {
     Remove-Item -LiteralPath $Alert -Force
 }

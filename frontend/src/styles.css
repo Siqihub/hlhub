@@ -81,7 +81,15 @@ td { height: 43px; padding: 0 14px; border-top: 1px solid #edf1f5; color: #26344
 .form-panel { padding-bottom: 16px; }
 .text-button { display: inline-flex; align-items: center; gap: 5px; border: 0; color: #1769e8; background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; }
 .friend-editor-list { padding: 6px 16px; }
-.friend-editor-row { min-height: 54px; display: grid; grid-template-columns: 36px 1fr 38px; align-items: center; gap: 10px; border-bottom: 1px solid #edf1f5; }
+.friend-editor-row { min-height: 54px; display: grid; grid-template-columns: 22px 36px 1fr 38px; align-items: center; gap: 10px; border-bottom: 1px solid #edf1f5; }
+.row-check { width: 16px; height: 16px; margin: 0; }
+.inline-actions, .inline-settings { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.inline-settings select, .inline-settings input { width: 130px !important; }
+.backup-options { width: 100%; display: grid; gap: 8px; margin: 8px 0 18px; font-size: 12px; color: #56657a; }
+.backup-options label { display: flex; gap: 8px; align-items: center; }
+.backup-options input { width: 16px; margin: 0; }
+.schedule-apply-actions { margin: 14px 0; }
+.log-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .row-number, .message-index { color: #8c98aa; font: 12px ui-monospace, monospace; }
 input, textarea, select { width: 100%; border: 1px solid #dce3ec; border-radius: 7px; padding: 10px 12px; color: #18263d; background: #fff; outline: none; }
 input:focus, textarea:focus, select:focus { border-color: #5797ef; box-shadow: 0 0 0 3px rgba(30,112,235,.1); }

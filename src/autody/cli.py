@@ -96,20 +96,22 @@ def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
             setup_logging(loaded)
             with open_chat(
                 loaded.profile_dir,
-                loaded.timeout_ms,
+                loaded.page_load_timeout_ms,
                 True,
                 loaded.artifact_dir,
                 home=_project_root(config),
             ) as page:
                 logging.info("登录状态和抖音聊天页正常。")
                 _write_health(loaded, "success")
-                if recovery_due(loaded, StateStore(loaded.state_file).load(), datetime.now()):
+                if loaded.startup_recovery_enabled and recovery_due(loaded, StateStore(loaded.state_file).load(), datetime.now()):
                     logging.info("检测到今日任务错过，启动同日恢复运行。")
                     chat = DouyinChat(
                         page,
                         DOUYIN_SELECTORS,
                         loaded.artifact_dir,
                         DOUYIN_CONFIRMATION_SELECTORS,
+                        confirmation_delay_ms=max(250, loaded.confirmation_timeout_ms // 3),
+                        friend_search_timeout_ms=loaded.friend_search_timeout_ms,
                     )
                     run_daily(loaded, chat, trigger_source="startup_recovery")
     except TaskAlreadyRunning:
@@ -137,7 +139,7 @@ def scan_friends(config: Path = typer.Option(Path("config.yaml"), "--config")):
             setup_logging(loaded)
             with open_chat(
                 loaded.profile_dir,
-                loaded.timeout_ms,
+                loaded.page_load_timeout_ms,
                 True,
                 loaded.artifact_dir,
                 home=_project_root(config),
@@ -220,17 +222,22 @@ def ui(
 def run(
     config: Path = typer.Option(Path("config.yaml"), "--config"),
     source: str = typer.Option("manual", "--source"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只检查任务可启动性，不打开浏览器或发送消息"),
 ):
     if source not in TRIGGER_SOURCES:
         raise typer.BadParameter(f"未知任务来源：{source}")
     loaded = load_config(config)
+    if dry_run:
+        enabled = sum(1 for target in loaded.targets if target.enabled)
+        typer.echo(f"模拟运行已通过：将处理 {enabled} 个启用目标；未打开浏览器，未发送消息。")
+        return
     try:
         with SingleInstanceLock(loaded.lock_file):
             configure_runtime(_project_root(config))
             setup_logging(loaded)
             with open_chat(
                 loaded.profile_dir,
-                loaded.timeout_ms,
+                loaded.page_load_timeout_ms,
                 loaded.headless,
                 loaded.artifact_dir,
                 home=_project_root(config),
@@ -240,6 +247,8 @@ def run(
                     DOUYIN_SELECTORS,
                     loaded.artifact_dir,
                     DOUYIN_CONFIRMATION_SELECTORS,
+                    confirmation_delay_ms=max(250, loaded.confirmation_timeout_ms // 3),
+                    friend_search_timeout_ms=loaded.friend_search_timeout_ms,
                 )
                 result = run_daily(loaded, chat, trigger_source=source)
             _write_health(loaded, "success")

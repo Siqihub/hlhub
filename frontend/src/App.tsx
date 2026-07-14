@@ -60,8 +60,8 @@ export default function App() {
         {view === "friends" && <FriendsPage notify={notify} />}
         {view === "messages" && <MessagesPage notify={notify} onNavigate={setView} />}
         {view === "packs" && <MessagePacksPage notify={notify} />}
-        {view === "scheduler" && <SchedulerPage status={status} onAction={action} busy={busy} />}
-        {view === "logs" && <LogsPage />}
+        {view === "scheduler" && <SchedulerPage status={status} notify={notify} onRefresh={load} />}
+        {view === "logs" && <LogsPage summary={status.statistics.log_summary} />}
         {view === "backup" && <BackupPage notify={notify} />}
         {view === "settings" && <SettingsPage notify={notify} />}
       </main>

@@ -104,8 +104,11 @@ def run_daily(
         },
     )
     daily.setdefault("confirmation_results", {})
-    pending = [target.name for target in config.targets if target.name not in daily["succeeded"]]
-    total = len(config.targets)
+    targets = [target for target in config.targets if target.enabled]
+    if config.friend_order == "randomized":
+        random.SystemRandom().shuffle(targets)
+    pending = [target.name for target in targets if target.name not in daily["succeeded"]]
+    total = len(targets)
     skipped = total - len(pending)
     run_id = hashlib.sha256(f"{started.isoformat()}:{key}:{trigger_source}".encode()).hexdigest()[:24]
     if not pending:
@@ -120,19 +123,28 @@ def run_daily(
         daily["message"] = rotation.peek(messages, state.rotation)
         store.save(state)
     outgoing_message = format_message_with_suffix(daily["message"], config.message_suffix)
+    daily.setdefault("messages_by_target", {})
 
     sent = 0
     retries = 0
     confirmation_results: dict[str, str] = {}
     blocked_error: str | None = None
-    for target in pending:
+    for target_index, target in enumerate(pending):
+        target_message = outgoing_message
+        if config.message_selection == "per_friend":
+            base = daily["messages_by_target"].get(target)
+            if not base:
+                base = random.SystemRandom().choice(messages)
+                daily["messages_by_target"][target] = base
+                store.save(state)
+            target_message = format_message_with_suffix(base, config.message_suffix)
         target_id = stable_target_id(target)
         error = None
         for attempt in range(config.retry_count):
             if attempt:
                 retries += 1
             try:
-                delivery = _delivery_result(chat.send(target, outgoing_message))
+                delivery = _delivery_result(chat.send(target, target_message))
             except FatalChatError as exc:
                 delivery = DeliveryResult(DeliveryStatus.BLOCKED, error=str(exc))
             except RuntimeError as exc:
@@ -171,13 +183,15 @@ def run_daily(
         store.save(state)
         if blocked_error:
             break
+        if target_index < len(pending) - 1:
+            time.sleep(random.uniform(config.min_delay_seconds, config.max_delay_seconds))
 
-    complete = all(target.name in daily["succeeded"] for target in config.targets)
+    complete = all(target.name in daily["succeeded"] for target in targets)
     if complete and not daily.get("consumed"):
         rotation.consume(daily["message"], state.rotation)
         daily["consumed"] = True
         store.save(state)
-    failed_names = [target.name for target in config.targets if target.name not in daily["succeeded"]]
+    failed_names = [target.name for target in targets if target.name not in daily["succeeded"]]
     status = RunStatus.BLOCKED if blocked_error else RunStatus.COMPLETED if complete else RunStatus.PARTIAL_FAILED
     result = RunResult(
         status,

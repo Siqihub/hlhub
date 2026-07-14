@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import re
+import time
 from pathlib import Path
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
@@ -110,6 +111,7 @@ class DouyinChat:
         confirmation_selectors: ConfirmationSelectors | None = None,
         confirmation_delay_ms: int = 2_000,
         confirmation_retries: int = 2,
+        friend_search_timeout_ms: int = 30_000,
     ):
         self.page = page
         self.selectors = selectors
@@ -121,6 +123,7 @@ class DouyinChat:
         )
         self.confirmation_delay_ms = confirmation_delay_ms
         self.confirmation_retries = confirmation_retries
+        self.friend_search_timeout_ms = friend_search_timeout_ms
 
     def _latest_outgoing_text(self) -> str | None:
         messages = self.page.locator(self.confirmation_selectors.outgoing_message_text)
@@ -161,6 +164,7 @@ class DouyinChat:
         scrollable = self.page.locator(self.selectors.conversation_list)
         if scrollable.count():
             scrollable.first.evaluate("el => el.scrollTop = 0")
+        deadline = time.monotonic() + self.friend_search_timeout_ms / 1000
         for _ in range(50):
             count = matches.count()
             if count:
@@ -175,6 +179,8 @@ class DouyinChat:
                 })"""
             )
             if position["before"] >= position["maximum"]:
+                break
+            if time.monotonic() >= deadline:
                 break
             scrollable.first.evaluate(
                 "(el, step) => { el.scrollTop += step; el.dispatchEvent(new Event('scroll')); }",

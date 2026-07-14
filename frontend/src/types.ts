@@ -28,6 +28,22 @@ export interface SchedulerTask {
   last_result: number;
 }
 
+export interface ScheduleSettings {
+  daily_health_check_time: string;
+  daily_send_time: string;
+  weekly_health_check_enabled: boolean;
+  weekly_health_check_weekday: string;
+  weekly_health_check_time: string;
+  startup_recovery_enabled: boolean;
+  recovery_deadline: string;
+}
+
+export interface SchedulePreview {
+  old: ScheduleSettings;
+  new: ScheduleSettings;
+  affected_tasks: { name: string; action: "update" | "remove" }[];
+}
+
 export interface DashboardStatus {
   today: {
     date: string;
@@ -59,6 +75,14 @@ export interface DashboardStatus {
     next_health_check: string | null;
     next_daily_send: string | null;
     most_recent_issue: string | null;
+    log_summary: {
+      active_errors: number;
+      warnings_24h: number;
+      successful_tasks_7d: number;
+      last_health_check: string | null;
+      last_send: string | null;
+      last_error_time: string | null;
+    };
   };
 }
 
@@ -84,7 +108,21 @@ export interface AppConfig {
   };
   message_pack_index_url: string | null;
   daily_send_time: string;
+  daily_health_check_time: string;
+  weekly_health_check_enabled: boolean;
+  weekly_health_check_weekday: string;
+  weekly_health_check_time: string;
+  startup_recovery_enabled: boolean;
   recovery_deadline: string;
+  min_delay_seconds: number;
+  max_delay_seconds: number;
+  page_load_timeout_ms: number;
+  friend_search_timeout_ms: number;
+  confirmation_timeout_ms: number;
+  friend_order: "configured" | "randomized";
+  message_selection: "one_for_all" | "per_friend";
+  completion_notifications_enabled: boolean;
+  log_retention_days: number;
   mask_log_friend_names: boolean;
 }
 
@@ -96,6 +134,9 @@ export interface LogEntry {
   summary: string;
   detail: string;
   source: string;
+  status: "active" | "resolved" | "historical";
+  fingerprint: string;
+  occurrences: number;
 }
 
 export interface LogPage {
@@ -106,6 +147,17 @@ export interface LogPage {
   start_date: string;
   end_date: string;
   scheduler: string;
+}
+
+export interface BackupPreview {
+  package_version: number;
+  autody_version: string | null;
+  categories: string[];
+  friend_count: number;
+  message_count: number;
+  schedule_changes: Record<string, { old: unknown; new: unknown }>;
+  suffix_change: boolean;
+  conflicts: string[];
 }
 
 export interface MessagePack {

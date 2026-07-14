@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from autody.config import MessageSuffixStyle, load_config, save_config
+from autody.config import AppConfig, MessageSuffixStyle, load_config, save_config
 
 
 def test_loads_valid_config(tmp_path: Path):
@@ -63,3 +63,12 @@ def test_new_recovery_and_log_defaults_keep_old_config_compatible(tmp_path: Path
     assert config.daily_send_time == "07:30"
     assert config.recovery_deadline == "23:59"
     assert config.mask_log_friend_names is True
+
+
+def test_config_validates_practical_sending_defaults_and_delay_range():
+    config = AppConfig(min_delay_seconds=1, max_delay_seconds=3, confirmation_timeout_ms=12_000)
+
+    assert config.friend_order == "configured"
+    assert config.message_selection == "one_for_all"
+    with pytest.raises(ValidationError, match="minimum delay"):
+        AppConfig(min_delay_seconds=4, max_delay_seconds=1)

@@ -134,10 +134,13 @@ Get-ScheduledTask -TaskName AutoDy-DailySpark
 
 应用层还会在管理台启动和健康检查时检查今日状态。只有当前时间已超过 `daily_send_time`、未超过 `recovery_deadline` 且今日仍有未完成目标时，才启动一次 `startup_recovery`。恢复任务与定时任务共用全局锁，并沿用同日成功名单，因此不会重发已完成目标。
 
-下面三个配置都有安全默认值，旧 `config.yaml` 无需修改：
+管理台“定时任务”页可编辑每日/每周检查时间、发送时间、启动恢复开关与当日截止时间。应用前会预览旧值、新值和受影响的 Windows 任务；如果任务更新失败，会保留旧配置并恢复旧任务。旧 `config.yaml` 仍可直接使用，新增项都有安全默认值：
 
 ```yaml
 daily_send_time: "07:30"
+daily_health_check_time: "07:20"
+weekly_health_check_enabled: true
+startup_recovery_enabled: true
 recovery_deadline: "23:59"
 mask_log_friend_names: true
 ```
@@ -152,13 +155,14 @@ mask_log_friend_names: true
 
 ## 备份与迁移
 
-管理台“备份迁移”页面可导出 ZIP，包含：
+管理台“备份迁移”页面可选择导出 ZIP 类别：
 
 - 好友配置
 - 文案库
-- 文案轮换和当日发送状态
+- 后缀、计划、发送行为、文案包和非敏感应用设置
+- 可选的文案轮换和当日发送状态
 
-备份明确排除 `data/browser-profile`。换电脑后导入备份，仍需本人重新扫码登录。
+新备份使用带版本、类别和 SHA-256 校验和的 manifest。导入前会预检路径、可执行文件、冲突和设置变化；支持合并/替换，并会先在 `data/backups/` 创建本地回滚备份。备份明确排除 `data/browser-profile`、Cookie、令牌、日志和截图。换电脑后导入备份，仍需本人重新扫码登录。
 
 ## 数据与排错
 
@@ -180,7 +184,7 @@ mask_log_friend_names: true
 4. 任务未运行：执行 `Get-ScheduledTaskInfo -TaskName AutoDy-DailySpark`。
 5. Chromium 路径异常：执行 `autody doctor`；需要修复时执行 `autody repair-playwright`。浏览器固定安装在 `data/ms-playwright`。
 
-管理台日志页默认只读取最近三天，支持日期、级别和任务类型过滤；旧版 `autody.log.YYYY-MM-DD` 仍可查看。Python traceback 默认折叠，好友名称默认显示为稳定的 `好友#xxxx`，可在设置中关闭脱敏。总览中的连续成功天数、7/30 天成功率和重试次数来自 JSONL 运行记录，不会在首页解析全部日志。
+管理台日志页默认只读取最近三天，支持日期、级别、任务和“当前/已解决/历史”过滤；旧版 `autody.log.YYYY-MM-DD` 仍可查看。相同 traceback 会按稳定指纹分组，Python traceback 默认折叠，好友名称默认显示为稳定的 `好友#xxxx`，可在设置中关闭脱敏。可归档历史日志、导出脱敏诊断包、打开本地日志目录或复制精简错误摘要。总览中的连续成功天数、7/30 天成功率和重试次数来自 JSONL 运行记录，不会在首页解析全部日志。
 
 ## 隐私边界
 
