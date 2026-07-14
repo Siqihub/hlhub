@@ -71,15 +71,6 @@ BLOCKED_SUFFIXES = {".exe", ".cmd", ".bat", ".ps1", ".dll", ".py", ".js", ".vbs"
 
 
 @dataclass(frozen=True)
-class FriendImportPreview:
-    targets: list[Target]
-    total_count: int
-    valid_count: int
-    duplicates: list[str]
-    invalid_count: int
-
-
-@dataclass(frozen=True)
 class MessageImportPreview:
     messages: list[str]
     total_count: int
@@ -179,46 +170,6 @@ def _safe_zip(raw: bytes) -> tuple[dict, dict[str, bytes]]:
     return manifest, files
 
 
-def parse_friend_import(raw: bytes, filename: str) -> FriendImportPreview:
-    suffix = Path(filename).suffix.lower()
-    try:
-        text = raw.decode("utf-8-sig")
-        if suffix == ".csv":
-            rows = list(csv.DictReader(StringIO(text)))
-        elif suffix == ".json":
-            value = json.loads(text)
-            rows = value.get("friends", value) if isinstance(value, dict) else value
-            if not isinstance(rows, list):
-                raise TransferError("好友 JSON 必须是数组")
-        else:
-            raise TransferError("好友导入仅支持 CSV 或 JSON")
-    except (UnicodeDecodeError, json.JSONDecodeError, csv.Error) as exc:
-        raise TransferError(f"好友文件无法解析：{exc}") from exc
-    targets: list[Target] = []
-    duplicates: list[str] = []
-    invalid = 0
-    names: set[str] = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            invalid += 1
-            continue
-        data = dict(row)
-        data["name"] = str(data.get("display name", data.get("display_name", data.get("name", "")))).strip()
-        if "enabled" in data and isinstance(data["enabled"], str):
-            data["enabled"] = data["enabled"].strip().lower() not in {"false", "0", "no", "否"}
-        try:
-            target = Target.model_validate({key: value for key, value in data.items() if key in Target.model_fields})
-        except Exception:
-            invalid += 1
-            continue
-        if target.name in names:
-            duplicates.append(target.name)
-            continue
-        names.add(target.name)
-        targets.append(target)
-    return FriendImportPreview(targets, len(rows), len(targets), duplicates, invalid)
-
-
 def parse_message_import(raw: bytes, filename: str) -> MessageImportPreview:
     suffix = Path(filename).suffix.lower()
     try:
@@ -264,6 +215,30 @@ def _read_json(payload: bytes, label: str) -> object:
         raise TransferError(f"{label} 无法解析") from exc
 
 
+def _parse_backup_targets(raw: bytes) -> list[Target]:
+    """Parse only the private JSON member of a complete AutoDy backup."""
+    value = _read_json(raw, "好友配置")
+    rows = value.get("friends", value) if isinstance(value, dict) else value
+    if not isinstance(rows, list):
+        raise TransferError("好友配置格式无效")
+    targets: list[Target] = []
+    names: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TransferError("好友配置包含无效条目")
+        try:
+            target = Target.model_validate(
+                {key: value for key, value in row.items() if key in Target.model_fields}
+            )
+        except Exception as exc:
+            raise TransferError("好友配置包含无效条目") from exc
+        if target.name in names:
+            raise TransferError("好友配置包含重复名称")
+        names.add(target.name)
+        targets.append(target)
+    return targets
+
+
 def preview_backup(raw: bytes, config: AppConfig) -> dict:
     manifest, files = _safe_zip(raw)
     categories = [ExportCategory(item) for item in manifest.get("categories", [])]
@@ -273,9 +248,9 @@ def preview_backup(raw: bytes, config: AppConfig) -> dict:
         "schedule_changes": {}, "suffix_change": False, "conflicts": [],
     }
     if "friends.json" in files:
-        parsed = parse_friend_import(files["friends.json"], "friends.json")
-        result["friend_count"] = parsed.valid_count
-        result["conflicts"] = [item.name for item in parsed.targets if any(old.name == item.name for old in config.targets)] + parsed.duplicates
+        targets = _parse_backup_targets(files["friends.json"])
+        result["friend_count"] = len(targets)
+        result["conflicts"] = [item.name for item in targets if any(old.name == item.name for old in config.targets)]
     if "messages.txt" in files:
         result["message_count"] = parse_message_import(files["messages.txt"], "messages.txt").valid_count
     if "schedule.json" in files:
@@ -311,7 +286,7 @@ def apply_backup(raw: bytes, config_path: Path, config: AppConfig, *, mode: Impo
     result = {"friends": {"imported": 0, "skipped": 0, "duplicated": 0, "conflicted": 0}, "messages": {"imported": 0, "skipped": 0, "duplicated": 0, "conflicted": 0}, "failed": 0, "backup": ""}
     message_final: list[str] | None = None
     if "friends.json" in files:
-        imported = parse_friend_import(files["friends.json"], "friends.json").targets
+        imported = _parse_backup_targets(files["friends.json"])
         if mode is ImportMode.REPLACE:
             candidate.targets = imported
             result["friends"]["imported"] = len(imported)
@@ -372,38 +347,6 @@ def apply_backup(raw: bytes, config_path: Path, config: AppConfig, *, mode: Impo
         raise TransferError(f"导入失败，已回滚：{exc}") from exc
     result["backup"] = str(backup)
     result["preview"] = preview
-    return result
-
-
-def apply_friend_import(
-    config_path: Path, config: AppConfig, imported: FriendImportPreview, *, mode: ImportMode
-) -> dict:
-    candidate = config.model_copy(deep=True)
-    result = {"imported": 0, "skipped": 0, "duplicated": len(imported.duplicates), "conflicted": 0, "failed": imported.invalid_count}
-    if mode is ImportMode.REPLACE:
-        candidate.targets = imported.targets
-        result["imported"] = len(imported.targets)
-    else:
-        existing = {target.name for target in candidate.targets}
-        for target in imported.targets:
-            if target.name in existing:
-                result["conflicted"] += 1
-            else:
-                candidate.targets.append(target)
-                existing.add(target.name)
-                result["imported"] += 1
-    candidate = AppConfig.model_validate(candidate.model_dump())
-    backup = _backup_before_import(config)
-    original = config_path.read_bytes() if config_path.exists() else None
-    try:
-        save_config(config_path, candidate)
-    except Exception as exc:
-        if original is None:
-            config_path.unlink(missing_ok=True)
-        else:
-            config_path.write_bytes(original)
-        raise TransferError(f"好友导入失败，已回滚：{exc}") from exc
-    result["backup"] = str(backup)
     return result
 
 

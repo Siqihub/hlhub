@@ -115,7 +115,9 @@ message_suffix:
 
 ## 自动识别好友
 
-登录抖音后，在“好友管理”点击“自动识别好友”。AutoDy 通过 DOM 读取并有限滚动聊天列表，将去重后的候选保存到 `data/discovered_friends.json`。它不会覆盖现有好友，也不会自动添加全部候选；选择候选并点击添加后，仍需保存配置。
+登录抖音后，在“好友管理”点击“扫描好友”。AutoDy 通过 DOM 读取并有限滚动聊天列表，将候选保存到 `data/discovered_friends.json`，并对每个可见聊天项截图生成本地头像缩略图。头像只保存在 `data/avatar-cache/`，管理台通过本地接口显示，既不会保存抖音头像 URL，也不会上传或打包头像。
+
+候选显示已配置、未配置或可能重名状态；只有未配置且无歧义的候选可以批量添加。已配置好友可用“扫描并更新头像”安全刷新缓存：该操作只扫描当前聊天列表，不发送消息，也不会自动改名、添加或删除目标。同名聊天项会标记为可能重名，保留原头像不覆盖。
 
 ## 定时任务
 
@@ -162,7 +164,7 @@ mask_log_friend_names: true
 - 后缀、计划、发送行为、文案包和非敏感应用设置
 - 可选的文案轮换和当日发送状态
 
-新备份使用带版本、类别和 SHA-256 校验和的 manifest。导入前会预检路径、可执行文件、冲突和设置变化；支持合并/替换，并会先在 `data/backups/` 创建本地回滚备份。备份明确排除 `data/browser-profile`、Cookie、令牌、日志和截图。换电脑后导入备份，仍需本人重新扫码登录。
+新备份使用带版本、类别和 SHA-256 校验和的 manifest。导入前会预检路径、可执行文件、冲突和设置变化；支持合并/替换，并会先在 `data/backups/` 创建本地回滚备份。完整备份会保留好友配置（包括启用状态、备注和稳定本地 ID），但明确排除 `data/browser-profile`、Cookie、令牌、日志、截图和 `data/avatar-cache/`。换电脑后导入备份，仍需本人重新扫码登录。
 
 ## 数据与排错
 
@@ -173,6 +175,7 @@ mask_log_friend_names: true
 - `data/logs/archive/`：通过管理台“归档旧日志”移动的历史日志，不会静默删除
 - `data/artifacts/`：失败页面截图
 - `data/browser-profile/`：抖音登录状态，敏感且不进入 Git
+- `data/avatar-cache/`：本机聊天头像缩略图，个人数据，不进入 Git、备份、诊断包或便携包
 - `data/discovered_friends.json`：最近一次候选好友扫描结果
 - `data/notifications/need-attention.txt`：管理台待处理通知
 
@@ -193,7 +196,7 @@ mask_log_friend_names: true
 - `config.yaml`
 - `messages.txt`
 - `data/browser-profile`、Cookie 和登录状态
-- 日志、失败截图、下载文件和候选好友
+- 日志、失败截图、下载文件、候选好友和 `data/avatar-cache`
 - `.venv`
 
 仓库公开内容只包括程序代码、文档、图标和通用 `message-packs` 示例。备份与文案包导入也都在本机完成。

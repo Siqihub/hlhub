@@ -19,7 +19,7 @@ def test_action_manager_rejects_second_browser_action_while_first_runs(tmp_path:
     manager.start("run")
     assert started.wait(timeout=2)
 
-    for action in ["health-check", "login", "scan-friends", "repair-playwright"]:
+    for action in ["health-check", "login", "scan-friends", "refresh-friend-avatars", "repair-playwright"]:
         with pytest.raises(ActionAlreadyRunning):
             manager.start(action)
 

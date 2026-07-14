@@ -12,6 +12,7 @@ BROWSER_ACTIONS = {
     "login",
     "health-check",
     "scan-friends",
+    "refresh-friend-avatars",
     "startup-recovery",
     "repair-playwright",
 }
@@ -77,6 +78,7 @@ class ActionManager:
             "login",
             "health-check",
             "scan-friends",
+            "refresh-friend-avatars",
             "repair-playwright",
         }:
             return [

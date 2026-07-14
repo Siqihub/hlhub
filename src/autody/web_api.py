@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import time
 import zipfile
@@ -36,10 +37,8 @@ from autody.transfer import (
     ImportMode as BackupImportMode,
     TransferError,
     apply_backup,
-    apply_friend_import,
     apply_message_import,
     create_backup,
-    parse_friend_import,
     parse_message_import,
     preview_backup,
 )
@@ -93,6 +92,14 @@ class FriendBatchUpdate(BaseModel):
     action: str = Field(pattern=r"^(enable|disable|delete)$")
 
 
+class DiscoveredFriendBatchAdd(BaseModel):
+    candidate_ids: list[str] = Field(default_factory=list)
+
+
+_SAFE_AVATAR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
+_FALLBACK_AVATAR = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 48 48\" role=\"img\" aria-label=\"默认头像\"><circle cx=\"24\" cy=\"24\" r=\"24\" fill=\"#e6f0fc\"/><circle cx=\"24\" cy=\"18\" r=\"8\" fill=\"#7e9ec4\"/><path d=\"M10 42c2-9 8-14 14-14s12 5 14 14\" fill=\"#7e9ec4\"/></svg>""".encode("utf-8")
+
+
 def _tail(path: Path, limit: int = 400) -> str:
     if not path.exists():
         return ""
@@ -106,6 +113,25 @@ def _tail(path: Path, limit: int = 400) -> str:
 
 def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def _avatar_id(value: str | None) -> str | None:
+    return value if value and _SAFE_AVATAR_ID.fullmatch(value) else None
+
+
+def _avatar_url(value: str | None) -> str:
+    return f"/api/avatars/{_avatar_id(value) or 'missing'}"
+
+
+def _avatar_path(cache_dir: Path, identifier: str) -> Path:
+    return cache_dir / f"{identifier}.png"
+
+
+def _last_success_date(state, name: str) -> str | None:
+    for key in sorted(state.daily, reverse=True):
+        if name in state.daily[key].get("succeeded", []):
+            return key
+    return None
 
 
 def _login_status(path: Path, log_dir: Path | None = None) -> str:
@@ -626,38 +652,101 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         )
         if result is None:
             return {"scanned_at": None, "candidates": []}
-        configured = {target.name for target in config.targets}
+        targets = {target.name: target for target in config.targets}
         return {
             "scanned_at": result.scanned_at,
             "candidates": [
                 {
-                    "name": candidate.name,
-                    "already_configured": candidate.name in configured,
+                    "candidate_id": candidate.candidate_id,
+                    "display_name": candidate.display_name,
+                    "avatar_url": _avatar_url(
+                        candidate.configured_target_id
+                        if candidate.match_status == "configured"
+                        else candidate.candidate_id
+                    ),
+                    "avatar_status": candidate.avatar_status,
+                    "discovered_at": candidate.discovered_at,
+                    "match_status": (
+                        "ambiguous"
+                        if candidate.match_status == "ambiguous"
+                        else "configured"
+                        if candidate.display_name in targets
+                        else "unconfigured"
+                    ),
+                    "configured_target_id": targets[candidate.display_name].stable_id
+                    if candidate.display_name in targets
+                    else None,
+                    "configured_enabled": targets[candidate.display_name].enabled
+                    if candidate.display_name in targets
+                    else None,
                 }
                 for candidate in result.candidates
             ],
         }
 
     @app.get("/api/friends")
-    def get_friends():
-        return {"friends": [target.model_dump(mode="json", exclude_none=True) for target in load_config(config_path).targets]}
-
-    @app.post("/api/friends/import/preview")
-    async def preview_friend_import(file: UploadFile = File(...)):
-        try:
-            result = parse_friend_import(await file.read(), file.filename or "friends.csv")
-        except TransferError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        return {"total_entries": result.total_count, "valid_entries": result.valid_count, "duplicates": result.duplicates, "invalid_entries": result.invalid_count}
-
-    @app.post("/api/friends/import")
-    async def import_friends(file: UploadFile = File(...), mode: BackupImportMode = BackupImportMode.MERGE):
+    def get_friends(today: str | None = None):
         config = load_config(config_path)
+        state = StateStore(config.state_file).load()
+        key = today or date.today().isoformat()
+        daily = state.daily.get(key, {})
+        succeeded = set(daily.get("succeeded", []))
+        failures = daily.get("failures", {})
+        cache_dir = config.state_file.parent / "avatar-cache"
+        friends = []
+        for target in config.targets:
+            identifier = _avatar_id(target.stable_id)
+            avatar_status = "cached" if identifier and _avatar_path(cache_dir, identifier).is_file() else "missing"
+            friends.append(
+                {
+                    "id": identifier,
+                    "display_name": target.name,
+                    "enabled": target.enabled,
+                    "note": target.note,
+                    "avatar_url": _avatar_url(identifier),
+                    "avatar_status": avatar_status,
+                    "today_status": "success" if target.name in succeeded else "failed" if target.name in failures else "pending",
+                    "last_success_date": _last_success_date(state, target.name),
+                }
+            )
+        return {"friends": friends}
+
+    @app.post("/api/friends/discovered/batch")
+    def add_discovered_friends(payload: DiscoveredFriendBatchAdd):
+        config = load_config(config_path)
+        result = load_discovered_friends(
+            config.state_file.parent / "discovered_friends.json"
+        )
+        if result is None:
+            raise HTTPException(409, "请先扫描好友")
+        candidates = {candidate.candidate_id: candidate for candidate in result.candidates}
+        existing = {target.name for target in config.targets}
+        added = skipped = 0
+        for candidate_id in dict.fromkeys(payload.candidate_ids):
+            candidate = candidates.get(candidate_id)
+            if (
+                candidate is None
+                or candidate.match_status == "ambiguous"
+                or candidate.display_name in existing
+                or not _avatar_id(candidate.candidate_id)
+            ):
+                skipped += 1
+                continue
+            config.targets.append(
+                Target(name=candidate.display_name, stable_id=candidate.candidate_id)
+            )
+            existing.add(candidate.display_name)
+            added += 1
+        if added:
+            save_config(config_path, config)
+        return {"added": added, "skipped": skipped}
+
+    @app.post("/api/friends/refresh-avatars", status_code=202)
+    def refresh_friend_avatars():
         try:
-            result = apply_friend_import(config_path, config, parse_friend_import(await file.read(), file.filename or "friends.csv"), mode=mode)
-        except TransferError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        return result
+            return run_action("refresh-friend-avatars")
+        except ActionAlreadyRunning as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.patch("/api/friends/batch")
     def update_friends_batch(payload: FriendBatchUpdate):
@@ -675,19 +764,20 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     target.enabled = enabled
                     affected += 1
         save_config(config_path, config)
-        return {"affected": affected, "friends": [target.model_dump(mode="json", exclude_none=True) for target in config.targets]}
+        return {"affected": affected}
 
-    @app.get("/api/friends/export")
-    def export_friends(format: str = "json"):
-        targets = [target.model_dump(mode="json", exclude_none=True) for target in load_config(config_path).targets]
-        if format == "csv":
-            output = StringIO()
-            writer = csv.DictWriter(output, fieldnames=["display name", "enabled", "note", "stable_id", "message_pack", "suffix_override"])
-            writer.writeheader()
-            for target in targets:
-                writer.writerow({"display name": target.pop("name"), **target})
-            return PlainTextResponse(output.getvalue(), headers={"Content-Disposition": "attachment; filename=autody-friends.csv"})
-        return Response(_json_bytes({"friends": targets}), media_type="application/json", headers={"Content-Disposition": "attachment; filename=autody-friends.json"})
+    @app.get("/api/avatars/{friend_id}")
+    def get_avatar(friend_id: str):
+        identifier = _avatar_id(friend_id)
+        if identifier is None:
+            raise HTTPException(404, "头像不存在")
+        config = load_config(config_path)
+        cache_dir = config.state_file.parent / "avatar-cache"
+        path = _avatar_path(cache_dir, identifier)
+        headers = {"Cache-Control": "private, max-age=86400"}
+        if path.is_file():
+            return FileResponse(path, media_type="image/png", headers=headers)
+        return Response(_FALLBACK_AVATAR, media_type="image/svg+xml", headers=headers)
 
     @app.get("/api/logs")
     def logs(
@@ -737,7 +827,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         config = load_config(config_path)
         page = query_logs(config.state_file.parent / "logs", config, page_size=200)
         lines = [f"{item.timestamp} {item.level} {item.task_type} [{item.status}] {item.summary}" for item in page.items]
-        manifest = {"format": "autody-diagnostics", "version": 1, "masked": True, "includes": ["recent-log-summary"], "excludes": ["sent-message-content", "cookies", "browser-profile"]}
+        manifest = {"format": "autody-diagnostics", "version": 1, "masked": True, "includes": ["recent-log-summary"], "excludes": ["sent-message-content", "cookies", "browser-profile", "avatar-cache"]}
         buffer = BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("manifest.json", _json_bytes(manifest))
@@ -842,6 +932,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             "login",
             "health-check",
             "scan-friends",
+            "refresh-friend-avatars",
             "repair-playwright",
             "install-scheduler",
             "remove-scheduler",
@@ -858,6 +949,14 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         if not job:
             raise HTTPException(404, "任务不存在")
         return job
+
+    @app.api_route(
+        "/api/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    def unknown_api(path: str):
+        raise HTTPException(404, "接口不存在")
 
     static_dir = Path(__file__).parent / "web" / "static"
     if static_dir.exists():

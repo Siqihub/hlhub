@@ -153,6 +153,38 @@ def test_logs_and_backup_exclude_browser_profile(tmp_path: Path):
     assert "secret.cookie" not in "\n".join(archive.namelist())
 
 
+def test_avatar_route_uses_cached_file_or_local_fallback_and_rejects_unsafe_ids(
+    tmp_path: Path,
+):
+    config = make_project(tmp_path)
+    cache = tmp_path / "data" / "avatar-cache"
+    cache.mkdir(parents=True)
+    (cache / "friend-safe.png").write_bytes(b"cached-avatar")
+    client = TestClient(create_app(config))
+
+    cached = client.get("/api/avatars/friend-safe")
+    fallback = client.get("/api/avatars/friend-missing")
+    unsafe = client.get("/api/avatars/friend.safe")
+
+    assert cached.status_code == 200
+    assert cached.content == b"cached-avatar"
+    assert cached.headers["cache-control"] == "private, max-age=86400"
+    assert fallback.status_code == 200
+    assert fallback.headers["content-type"].startswith("image/svg+xml")
+    assert unsafe.status_code == 404
+
+
+def test_diagnostic_export_explicitly_excludes_avatar_cache(tmp_path: Path):
+    client = TestClient(create_app(make_project(tmp_path)))
+
+    response = client.get("/api/logs/diagnostic-export")
+    archive = zipfile.ZipFile(BytesIO(response.content))
+    manifest = json.loads(archive.read("manifest.json"))
+
+    assert "avatar-cache" in manifest["excludes"]
+    assert not any("avatar" in name for name in archive.namelist())
+
+
 def test_startup_recovery_runs_once_after_send_time(tmp_path: Path):
     config = make_project(tmp_path)
     calls = []
@@ -286,8 +318,24 @@ def test_scan_friends_endpoint_starts_action_and_lists_candidates(tmp_path: Path
             {
                 "scanned_at": "2026-07-04T12:30:00",
                 "candidates": [
-                    {"name": "小明", "already_configured": True},
-                    {"name": "新朋友", "already_configured": False},
+                    {
+                        "candidate_id": "friend-xiaoming",
+                        "display_name": "小明",
+                        "avatar_cache_path": "friend-xiaoming.png",
+                        "avatar_status": "cached",
+                        "discovered_at": "2026-07-04T12:30:00",
+                        "match_status": "configured",
+                        "configured_target_id": "friend-xiaoming",
+                        "configured_enabled": True,
+                    },
+                    {
+                        "candidate_id": "candidate-new",
+                        "display_name": "新朋友",
+                        "avatar_cache_path": "candidate-new.png",
+                        "avatar_status": "cached",
+                        "discovered_at": "2026-07-04T12:30:00",
+                        "match_status": "unconfigured",
+                    },
                 ],
             },
             ensure_ascii=False,
@@ -301,7 +349,70 @@ def test_scan_friends_endpoint_starts_action_and_lists_candidates(tmp_path: Path
 
     assert response.status_code == 202
     assert calls == ["scan-friends"]
-    assert candidates.json()["candidates"][1]["name"] == "新朋友"
+    assert candidates.json()["candidates"][1]["display_name"] == "新朋友"
+    assert candidates.json()["candidates"][1]["avatar_url"] == "/api/avatars/candidate-new"
+
+
+def test_discovered_candidate_batch_add_keeps_its_cached_avatar_and_friend_state(
+    tmp_path: Path,
+):
+    config = make_project(tmp_path)
+    discovered = tmp_path / "data" / "discovered_friends.json"
+    discovered.write_text(
+        json.dumps(
+            {
+                "scanned_at": "2026-07-04T12:30:00",
+                "candidates": [{
+                    "candidate_id": "candidate-new",
+                    "display_name": "新朋友",
+                    "avatar_cache_path": "candidate-new.png",
+                    "avatar_status": "cached",
+                    "discovered_at": "2026-07-04T12:30:00",
+                    "match_status": "unconfigured",
+                }],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    cache = tmp_path / "data" / "avatar-cache"
+    cache.mkdir(parents=True)
+    (cache / "candidate-new.png").write_bytes(b"new-avatar")
+    client = TestClient(create_app(config))
+
+    added = client.post("/api/friends/discovered/batch", json={"candidate_ids": ["candidate-new"]})
+    friends = client.get("/api/friends?today=2026-06-24").json()["friends"]
+
+    assert added.status_code == 200
+    assert added.json()["added"] == 1
+    friend = next(item for item in friends if item["display_name"] == "新朋友")
+    assert friend["id"] == "candidate-new"
+    assert friend["avatar_url"] == "/api/avatars/candidate-new"
+    assert friend["today_status"] == "pending"
+    assert friend["last_success_date"] is None
+
+
+def test_refresh_avatars_starts_only_the_safe_browser_scan(tmp_path: Path):
+    calls = []
+    client = TestClient(
+        create_app(
+            make_project(tmp_path),
+            action_runner=lambda action: calls.append(action) or {"id": "avatar-1", "action": action, "status": "running"},
+        )
+    )
+
+    response = client.post("/api/friends/refresh-avatars")
+
+    assert response.status_code == 202
+    assert calls == ["refresh-friend-avatars"]
+
+
+def test_standalone_friend_import_export_routes_are_removed(tmp_path: Path):
+    client = TestClient(create_app(make_project(tmp_path)))
+
+    assert client.post("/api/friends/import").status_code == 404
+    assert client.post("/api/friends/import/preview").status_code == 404
+    assert client.get("/api/friends/export").status_code == 404
 
 
 def test_status_returns_actionable_issues_without_friends_or_messages(

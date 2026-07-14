@@ -3,6 +3,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from autody.cli import app
+from autody.friend_discovery import AvatarRefreshResult
 from autody.locking import SingleInstanceLock
 from autody.runner import RunResult, RunStatus
 
@@ -108,6 +109,34 @@ def test_scan_friends_uses_same_global_lock(tmp_path: Path, monkeypatch):
     assert result.exit_code == 0
     assert "已有 AutoDy 任务正在运行，本次跳过。" in result.stdout
     assert called is False
+
+
+def test_refresh_friend_avatars_only_scans_and_persists_missing_stable_id(
+    tmp_path: Path, monkeypatch
+):
+    (tmp_path / "messages.txt").write_text("早安\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text("targets:\n  - name: 小明\nmessages_file: messages.txt\n", encoding="utf-8")
+
+    class Context:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            return False
+
+    def refresh(loaded, *_args):
+        loaded.targets[0].stable_id = "friend-xiaoming"
+        return AvatarRefreshResult(updated=1, missing=0, ambiguous=0, config_changed=True)
+
+    monkeypatch.setattr("autody.cli.open_chat", lambda *_args, **_kwargs: Context())
+    monkeypatch.setattr("autody.cli.refresh_configured_avatars", refresh, raising=False)
+
+    result = runner.invoke(app, ["refresh-friend-avatars", "--config", str(config)])
+
+    assert result.exit_code == 0
+    assert "头像更新完成：更新 1 个，未找到 0 个，存在重名 0 个。" in result.stdout
+    assert "stable_id: friend-xiaoming" in config.read_text(encoding="utf-8")
 
 
 def test_run_reports_already_done_without_claiming_new_send(tmp_path: Path, monkeypatch):

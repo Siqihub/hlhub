@@ -21,6 +21,6 @@ foreach ($item in $items) {
 }
 
 # Sensitive/runtime paths intentionally excluded: .venv, data, browser-profile,
-# config.yaml, messages.txt, node_modules, .git.
+# avatar-cache, config.yaml, messages.txt, node_modules, .git.
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Archive -Force
 Write-Host "Portable archive: $Archive"

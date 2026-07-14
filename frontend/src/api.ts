@@ -1,6 +1,7 @@
 import type {
   AppConfig,
   BackupPreview,
+  ConfiguredFriend,
   DashboardStatus,
   FriendDiscovery,
   LogPage,
@@ -77,8 +78,16 @@ export const api = {
   },
   scanFriends: () =>
     request<ActionJob>("/api/friends/scan", { method: "POST" }),
+  refreshFriendAvatars: () =>
+    request<ActionJob>("/api/friends/refresh-avatars", { method: "POST" }),
   discoveredFriends: () =>
     request<FriendDiscovery>("/api/friends/discovered"),
+  friends: () => request<{ friends: ConfiguredFriend[] }>("/api/friends"),
+  addDiscoveredFriends: (candidateIds: string[]) =>
+    request<{ added: number; skipped: number }>("/api/friends/discovered/batch", {
+      method: "POST",
+      body: JSON.stringify({ candidate_ids: candidateIds })
+    }),
   importBackup: (file: File, mode: "merge" | "replace" = "merge") => {
     const data = new FormData();
     data.append("file", file);
@@ -96,8 +105,6 @@ export const api = {
     if (!response.ok) throw new Error(await response.text());
     return response.blob();
   },
-  previewFriendImport: (file: File) => upload<{ total_entries: number; valid_entries: number; duplicates: string[]; invalid_entries: number }>("/api/friends/import/preview", file),
-  importFriends: (file: File, mode: "merge" | "replace") => upload<{ imported: number; conflicted: number; duplicated: number }>(`/api/friends/import?mode=${mode}`, file),
   friendBatch: (names: string[], action: "enable" | "disable" | "delete") => request<{ affected: number }>("/api/friends/batch", { method: "PATCH", body: JSON.stringify({ names, action }) }),
   previewMessageImport: (file: File) => upload<{ total_entries: number; valid_entries: number; exact_duplicates: number; empty_entries: number; overly_long_entries: number; entries_with_links: number }>("/api/messages/import/preview", file),
   importMessages: (file: File, mode: "merge" | "replace") => upload<{ imported: number; duplicated: number; total: number }>(`/api/messages/import?mode=${mode}`, file),

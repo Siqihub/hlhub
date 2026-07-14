@@ -194,11 +194,28 @@ export interface PackImportResult {
 }
 
 export interface FriendCandidate {
-  name: string;
-  already_configured: boolean;
+  candidate_id: string;
+  display_name: string;
+  avatar_url: string;
+  avatar_status: "cached" | "missing";
+  discovered_at: string;
+  match_status: "configured" | "unconfigured" | "ambiguous";
+  configured_target_id: string | null;
+  configured_enabled: boolean | null;
 }
 
 export interface FriendDiscovery {
   scanned_at: string | null;
   candidates: FriendCandidate[];
+}
+
+export interface ConfiguredFriend {
+  id: string | null;
+  display_name: string;
+  enabled: boolean;
+  note: string;
+  avatar_url: string;
+  avatar_status: "cached" | "missing";
+  today_status: "success" | "failed" | "pending";
+  last_success_date: string | null;
 }

@@ -81,7 +81,11 @@ td { height: 43px; padding: 0 14px; border-top: 1px solid #edf1f5; color: #26344
 .form-panel { padding-bottom: 16px; }
 .text-button { display: inline-flex; align-items: center; gap: 5px; border: 0; color: #1769e8; background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; }
 .friend-editor-list { padding: 6px 16px; }
-.friend-editor-row { min-height: 54px; display: grid; grid-template-columns: 22px 36px 1fr 38px; align-items: center; gap: 10px; border-bottom: 1px solid #edf1f5; }
+.friend-editor-row { min-height: 68px; display: grid; grid-template-columns: 22px 42px 26px minmax(120px, 1fr) 38px; align-items: center; gap: 10px; border-bottom: 1px solid #edf1f5; }
+.friend-editor-copy { min-width: 0; display: grid; gap: 4px; }
+.friend-editor-copy small { color: #7d8a9d; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.friend-avatar { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; object-fit: cover; color: #24528e; background: #e6f0fc; font-size: 13px; }
+.avatar-fallback { font-weight: 700; }
 .row-check { width: 16px; height: 16px; margin: 0; }
 .inline-actions, .inline-settings { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .inline-settings select, .inline-settings input { width: 130px !important; }
@@ -126,10 +130,11 @@ input:focus, textarea:focus, select:focus { border-color: #5797ef; box-shadow: 0
 .pack-preview li { padding: 5px 0; color: #47566d; font-size: 12px; break-inside: avoid; }
 .discovery-panel { margin-top: 14px; overflow: hidden; }
 .candidate-grid { padding: 15px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
-.candidate { min-height: 49px; padding: 9px 11px; display: grid; grid-template-columns: 18px 1fr; gap: 3px 8px; align-items: center; border: 1px solid #e2e8ef; border-radius: 8px; cursor: pointer; }
+.candidate { min-height: 58px; padding: 9px 11px; display: grid; grid-template-columns: 18px 40px 1fr; gap: 3px 8px; align-items: center; border: 1px solid #e2e8ef; border-radius: 8px; cursor: pointer; }
 .candidate input { width: 16px; margin: 0; }
 .candidate span { font-size: 12px; font-weight: 650; }
-.candidate small { grid-column: 2; color: #8190a4; font-size: 10px; }
+.candidate small { grid-column: 3; color: #8190a4; font-size: 10px; }
+.candidate .friend-avatar { grid-row: 1 / span 2; }
 .candidate.configured { opacity: .6; background: #f7f9fc; cursor: default; }
 .scheduler-list { overflow: hidden; }
 .scheduler-row { min-height: 82px; display: grid; grid-template-columns: 45px minmax(180px, 1fr) 80px 210px 150px; gap: 15px; padding: 15px 18px; align-items: center; border-bottom: 1px solid #edf1f5; }

@@ -4,14 +4,13 @@ import zipfile
 
 import pytest
 
-from autody.config import AppConfig, Target
+from autody.config import AppConfig, Target, load_config
 from autody.transfer import (
     ExportCategory,
     ImportMode,
     TransferError,
     apply_backup,
     create_backup,
-    parse_friend_import,
     parse_message_import,
     preview_backup,
 )
@@ -70,13 +69,7 @@ def test_backup_merge_keeps_ambiguous_friend_and_creates_local_backup(tmp_path: 
     assert "新文案" in config.messages_file.read_text(encoding="utf-8")
 
 
-def test_friend_csv_json_and_message_txt_csv_json_preview_and_exact_dedupe():
-    friends = parse_friend_import("display name,enabled,note\n小明,true,同学\n小红,false,\n".encode(), "friends.csv")
-    assert friends.valid_count == 2
-    assert friends.duplicates == []
-    friend_json = parse_friend_import('{"friends":[{"name":"小蓝","enabled":false}]}'.encode(), "friends.json")
-    assert friend_json.targets[0].enabled is False
-
+def test_message_txt_csv_json_preview_and_exact_dedupe():
     messages = parse_message_import("早安\n早安\n\nhttps://example.com\n".encode(), "messages.txt")
     assert messages.total_count == 4
     assert messages.exact_duplicates == 1
@@ -85,6 +78,28 @@ def test_friend_csv_json_and_message_txt_csv_json_preview_and_exact_dedupe():
     assert messages.messages == ["早安", "https://example.com"]
     assert parse_message_import("message\n午安\n".encode(), "messages.csv").messages == ["午安"]
     assert parse_message_import('{"messages":["晚安"]}'.encode(), "messages.json").messages == ["晚安"]
+
+
+def test_complete_backup_keeps_friend_settings_and_stable_id(tmp_path: Path):
+    config = _config(tmp_path)
+    config.messages_file.write_text("原文案\n", encoding="utf-8")
+    incoming_messages = tmp_path / "incoming.txt"
+    incoming_messages.write_text("新文案\n", encoding="utf-8")
+    incoming = AppConfig(
+        targets=[Target(name="小蓝", enabled=False, note="同学", stable_id="friend-preserved", message_pack="daily")],
+        messages_file=incoming_messages,
+    )
+    package = create_backup(incoming, {ExportCategory.FRIENDS, ExportCategory.MESSAGES})
+    config_path = tmp_path / "config.yaml"
+
+    apply_backup(package, config_path, config, mode=ImportMode.REPLACE)
+
+    restored = load_config(config_path).targets[0]
+    assert restored.name == "小蓝"
+    assert restored.enabled is False
+    assert restored.note == "同学"
+    assert restored.stable_id == "friend-preserved"
+    assert restored.message_pack == "daily"
 
 
 def test_import_rollback_restores_messages_when_write_fails(tmp_path: Path, monkeypatch):
