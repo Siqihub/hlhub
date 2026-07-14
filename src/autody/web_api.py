@@ -7,9 +7,11 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import subprocess
 import threading
 import time
+import uuid
 from urllib.parse import quote
 import zipfile
 
@@ -132,6 +134,18 @@ def _avatar_path(cache_dir: Path, identifier: str) -> Path:
     return cache_dir / f"{identifier}.png"
 
 
+def _copy_candidate_avatar(cache_dir: Path, candidate, target: Target) -> None:
+    if not target.stable_id:
+        return
+    source = _avatar_path(cache_dir, candidate.avatar_cache_key or candidate.candidate_id)
+    destination = _avatar_path(cache_dir, target.stable_id)
+    if source.is_file() and not destination.exists():
+        try:
+            shutil.copyfile(source, destination)
+        except OSError:
+            pass
+
+
 def _last_success_date(state, name: str) -> str | None:
     for key in sorted(state.daily, reverse=True):
         if name in state.daily[key].get("succeeded", []):
@@ -196,6 +210,10 @@ def _config_payload(config: AppConfig) -> dict:
         "completion_notifications_enabled": config.completion_notifications_enabled,
         "log_retention_days": config.log_retention_days,
         "mask_log_friend_names": config.mask_log_friend_names,
+        "friend_scan_lock_timeout_ms": config.friend_scan_lock_timeout_ms,
+        "friend_scan_overall_timeout_ms": config.friend_scan_overall_timeout_ms,
+        "friend_scan_max_rounds": config.friend_scan_max_rounds,
+        "avatar_capture_timeout_ms": config.avatar_capture_timeout_ms,
     }
 
 
@@ -704,6 +722,11 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     @app.get("/api/friends/discovered")
     def discovered_friends():
         config = load_config(config_path)
+        progress_path = config.state_file.parent / "friend_scan_progress.json"
+        try:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            progress = {}
         result = load_discovered_friends(
             config.state_file.parent / "discovered_friends.json"
         )
@@ -715,18 +738,20 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                 "stale": True,
                 "refresh_running": refresh_is_running,
                 "last_result": {},
+                "progress": progress,
                 "candidates": [],
             }
         targets = {
-            target.stable_id: target
+            target.candidate_id: target
             for target in config.targets
-            if target.stable_id and _avatar_id(target.stable_id)
+            if target.candidate_id and target.stable_id and _avatar_id(target.stable_id)
         }
         return {
             "scanned_at": result.scanned_at,
             "stale": stale,
             "refresh_running": refresh_is_running,
             "last_result": result.last_result,
+            "progress": progress,
             "candidates": [
                 {
                     "candidate_id": candidate.candidate_id,
@@ -737,9 +762,9 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "discovered_at": candidate.discovered_at,
                     "match_status": "configured" if candidate.candidate_id in targets else candidate.match_status,
                     "configured": candidate.candidate_id in targets,
-                    "target_id": candidate.candidate_id if candidate.candidate_id in targets else None,
+                    "target_id": targets[candidate.candidate_id].stable_id if candidate.candidate_id in targets else None,
                     "enabled": targets[candidate.candidate_id].enabled if candidate.candidate_id in targets else None,
-                    "configured_target_id": candidate.candidate_id if candidate.candidate_id in targets else None,
+                    "configured_target_id": targets[candidate.candidate_id].stable_id if candidate.candidate_id in targets else None,
                     "configured_enabled": targets[candidate.candidate_id].enabled if candidate.candidate_id in targets else None,
                     "avatar_updated_at": candidate.avatar_updated_at,
                     "first_discovered_at": candidate.first_discovered_at,
@@ -761,7 +786,8 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         running = refresh_running()
         return {
             "refresh_running": running,
-            "stage": "opening_douyin" if running else "completed",
+            "stage": str(progress.get("stage", "opening_douyin" if running else "completed")),
+            "progress": progress,
             "last_result": result.last_result if result else {},
         }
 
@@ -780,9 +806,13 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         avatar_versions = {
             identifier: candidate.avatar_updated_at
             for candidate in (discovered.candidates if discovered else [])
-            for identifier in [candidate.candidate_id]
-            if candidate.avatar_updated_at
+            for identifier in [candidate.configured_target_id or candidate.avatar_cache_key]
+            if identifier and candidate.avatar_updated_at
         }
+        normalized_names: dict[str, int] = defaultdict(int)
+        for target in config.targets:
+            if target.enabled:
+                normalized_names[" ".join(target.name.split()).casefold()] += 1
         friends = []
         for target in config.targets:
             identifier = _avatar_id(target.stable_id)
@@ -798,6 +828,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "avatar_status": avatar_status,
                     "today_status": "success" if target.name in succeeded else "failed" if target.name in failures else "pending",
                     "last_success_date": _last_success_date(state, target.name),
+                    "ambiguous_duplicate": target.enabled and normalized_names[" ".join(target.name.split()).casefold()] > 1,
                 }
             )
         return {"friends": friends}
@@ -811,7 +842,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         if result is None:
             raise HTTPException(409, "请先扫描好友")
         candidates = {candidate.candidate_id: candidate for candidate in result.candidates}
-        existing = {target.stable_id for target in config.targets if target.stable_id}
+        existing = {target.candidate_id for target in config.targets if target.candidate_id}
         added = skipped = 0
         for candidate_id in dict.fromkeys(payload.candidate_ids):
             candidate = candidates.get(candidate_id)
@@ -824,9 +855,9 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             ):
                 skipped += 1
                 continue
-            config.targets.append(
-                Target(name=candidate.display_name, stable_id=candidate.candidate_id)
-            )
+            target = Target(name=candidate.display_name, stable_id=f"target-{uuid.uuid4().hex}", candidate_id=candidate.candidate_id)
+            config.targets.append(target)
+            _copy_candidate_avatar(config.state_file.parent / "avatar-cache", candidate, target)
             existing.add(candidate.candidate_id)
             added += 1
         if added:
@@ -848,7 +879,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         if candidate is None or candidate.presence_status == "stale":
             raise HTTPException(404, "未找到可添加的候选好友")
         existing = next(
-            (target for target in config.targets if target.stable_id == candidate_id),
+            (target for target in config.targets if target.candidate_id == candidate_id),
             None,
         )
         if existing is not None:
@@ -860,10 +891,15 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "enabled": existing.enabled,
                 },
             }
-        if candidate.match_status == "ambiguous" or not _avatar_id(candidate.candidate_id):
+        if candidate.match_status in {"ambiguous", "needs_reassociation"} or not _avatar_id(candidate.candidate_id):
             raise HTTPException(409, "该候选好友缺少可安全使用的身份标识")
-        target = Target(name=candidate.display_name, stable_id=candidate.candidate_id)
+        target = Target(
+            name=candidate.display_name,
+            stable_id=f"target-{uuid.uuid4().hex}",
+            candidate_id=candidate.candidate_id,
+        )
         config.targets.append(target)
+        _copy_candidate_avatar(config.state_file.parent / "avatar-cache", candidate, target)
         save_config(config_path, config)
         return {
             "created": True,

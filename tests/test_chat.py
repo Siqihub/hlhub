@@ -2,14 +2,17 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from autody.chat import (
+    ChatPageLoadError,
     ChatSelectors,
     DOUYIN_CONFIRMATION_SELECTORS,
     DOUYIN_SELECTORS,
     DeliveryStatus,
     DouyinChat,
     normalize_message_text,
+    open_chat,
 )
 
 
@@ -149,3 +152,45 @@ def test_latest_outgoing_uses_visual_order_for_reversed_douyin_dom(page, tmp_pat
     chat = DouyinChat(page, ChatSelectors.test_defaults(), tmp_path, confirmation_delay_ms=0)
 
     assert chat._latest_outgoing_text() == "最新消息"
+
+
+def test_open_chat_bounds_page_load_and_closes_resources(monkeypatch, tmp_path: Path):
+    state = {"context_closed": False, "playwright_stopped": False}
+
+    class FakePage:
+        def goto(self, _url, **kwargs):
+            assert kwargs == {"wait_until": "domcontentloaded", "timeout": 321}
+            raise PlaywrightTimeoutError("page timed out")
+
+    class FakeContext:
+        pages = [FakePage()]
+
+        def set_default_timeout(self, timeout):
+            assert timeout == 321
+
+        def close(self):
+            state["context_closed"] = True
+
+    class FakeChromium:
+        def launch_persistent_context(self, profile_dir, **kwargs):
+            assert profile_dir == str(tmp_path / "profile")
+            assert kwargs == {"headless": True, "timeout": 321}
+            return FakeContext()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def stop(self):
+            state["playwright_stopped"] = True
+
+    class FakePlaywrightFactory:
+        def start(self):
+            return FakePlaywright()
+
+    monkeypatch.setattr("autody.chat.sync_playwright", lambda: FakePlaywrightFactory())
+
+    with pytest.raises(ChatPageLoadError, match="page load timed out"):
+        with open_chat(tmp_path / "profile", timeout_ms=321):
+            pass
+
+    assert state == {"context_closed": True, "playwright_stopped": True}

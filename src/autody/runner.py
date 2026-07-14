@@ -21,6 +21,7 @@ class RunStatus(str, Enum):
     COMPLETED = "completed"
     PARTIAL_FAILED = "partial_failed"
     BLOCKED = "blocked"
+    BLOCKED_AMBIGUOUS_TARGET = "blocked_ambiguous_target"
 
 
 @dataclass(frozen=True)
@@ -107,12 +108,31 @@ def run_daily(
     targets = [target for target in config.targets if target.enabled]
     if config.friend_order == "randomized":
         random.SystemRandom().shuffle(targets)
-    pending = [target.name for target in targets if target.name not in daily["succeeded"]]
+    normalized_names = {}
+    for target in targets:
+        normalized_names.setdefault(" ".join(target.name.split()).casefold(), []).append(target)
+    ambiguous_names = {
+        name
+        for name, grouped_targets in normalized_names.items()
+        if len(grouped_targets) > 1
+    }
+    ambiguous_targets = [
+        target for target in targets
+        if " ".join(target.name.split()).casefold() in ambiguous_names
+    ]
+    for target in ambiguous_targets:
+        daily["failures"][target.name] = "blocked_ambiguous_target"
+    pending = [
+        target.name for target in targets
+        if target.name not in daily["succeeded"]
+        and " ".join(target.name.split()).casefold() not in ambiguous_names
+    ]
     total = len(targets)
     skipped = total - len(pending)
     run_id = hashlib.sha256(f"{started.isoformat()}:{key}:{trigger_source}".encode()).hexdigest()[:24]
     if not pending:
-        result = RunResult(RunStatus.ALREADY_DONE, total, 0, skipped, 0, run_id=run_id)
+        status = RunStatus.BLOCKED_AMBIGUOUS_TARGET if ambiguous_targets else RunStatus.ALREADY_DONE
+        result = RunResult(status, total, 0, skipped, len(ambiguous_targets), "blocked_ambiguous_target" if ambiguous_targets else None, run_id=run_id)
         _record_history(config, started, trigger_source, result, daily.get("message", ""), [])
         return result
     if skipped and trigger_source == "manual":
@@ -192,7 +212,12 @@ def run_daily(
         daily["consumed"] = True
         store.save(state)
     failed_names = [target.name for target in targets if target.name not in daily["succeeded"]]
-    status = RunStatus.BLOCKED if blocked_error else RunStatus.COMPLETED if complete else RunStatus.PARTIAL_FAILED
+    status = (
+        RunStatus.BLOCKED_AMBIGUOUS_TARGET if ambiguous_targets
+        else RunStatus.BLOCKED if blocked_error
+        else RunStatus.COMPLETED if complete
+        else RunStatus.PARTIAL_FAILED
+    )
     result = RunResult(
         status,
         total,

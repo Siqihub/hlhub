@@ -9,7 +9,9 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 from typing import Callable
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import uuid
 
 from autody.chat import ChatSelectors
@@ -75,6 +77,73 @@ class AvatarRefreshResult:
     config_changed: bool
 
 
+class ScanProgress:
+    """Small on-disk status record for the existing dashboard polling loop."""
+
+    _LABELS = {
+        "waiting_browser": "正在等待浏览器",
+        "launching_chromium": "正在启动浏览器",
+        "loading_chat_page": "正在加载抖音聊天页",
+        "locating_chat_list": "正在读取聊天列表",
+        "scanning_rows": "正在读取聊天列表",
+        "updating_avatars": "正在更新头像",
+        "writing_cache": "正在保存候选缓存",
+        "releasing_browser_lock": "正在释放浏览器锁",
+    }
+
+    def __init__(self, output_path: Path, monotonic: Callable[[], float] = time.monotonic):
+        self.path = output_path.with_name("friend_scan_progress.json")
+        self.monotonic = monotonic
+        self.started = monotonic()
+        self.stage_started = self.started
+        self.stage = "waiting_browser"
+        self.timings: dict[str, float] = {}
+        self.current = 0
+        self.total: int | None = None
+        self._write(running=True)
+
+    def update(self, stage: str, current: int = 0, total: int | None = None) -> None:
+        if stage == self.stage:
+            self.current, self.total = current, total
+            self._write(running=True)
+            return
+        now = self.monotonic()
+        self.timings[self.stage] = self.timings.get(self.stage, 0.0) + now - self.stage_started
+        self.stage, self.stage_started = stage, now
+        self.current, self.total = current, total
+        self._write(running=True)
+
+    def finish(self, status: str, **details: object) -> dict[str, object]:
+        now = self.monotonic()
+        self.timings[self.stage] = self.timings.get(self.stage, 0.0) + now - self.stage_started
+        payload: dict[str, object] = {
+            "running": False,
+            "stage": self.stage,
+            "message": self._LABELS.get(self.stage, self.stage),
+            "status": status,
+            "current": self.current,
+            "total": self.total,
+            "timings": {key: round(value, 3) for key, value in self.timings.items()},
+            "total_seconds": round(now - self.started, 3),
+            **details,
+        }
+        self._write_payload(payload)
+        return payload
+
+    def _write(self, *, running: bool) -> None:
+        self._write_payload({
+            "running": running,
+            "stage": self.stage,
+            "message": self._LABELS.get(self.stage, self.stage),
+            "current": self.current,
+            "total": self.total,
+            "timings": {key: round(value, 3) for key, value in self.timings.items()},
+        })
+
+    def _write_payload(self, payload: dict[str, object]) -> None:
+        _write_discovery_payload(self.path, payload)
+
+
 @dataclass(frozen=True)
 class _ScannedItem:
     name: str
@@ -84,6 +153,7 @@ class _ScannedItem:
     identity_source: str | None
     row_index: int
     capture_attempted: bool = True
+    avatar_capture_failed: bool = False
 
 
 def _new_local_id(prefix: str) -> str:
@@ -101,23 +171,49 @@ def _avatar_path(cache_dir: Path, identifier: str) -> Path:
     return cache_dir / f"{identifier}.png"
 
 
-def _capture_temporary_avatar(item, cache_dir: Path) -> tuple[Path | None, str | None]:
+def _capture_temporary_avatar(
+    item, cache_dir: Path, timeout_ms: int
+) -> tuple[Path | None, str | None, bool]:
     """Capture the rendered in-list avatar without storing its remote URL."""
     temporary = cache_dir / f".scan-{uuid.uuid4().hex}.png"
     try:
-        item.locator("img").first.screenshot(path=str(temporary))
+        avatar = item.locator("img").first
+        try:
+            avatar.screenshot(path=str(temporary), timeout=timeout_ms)
+        except TypeError:  # test doubles and older Playwright bindings
+            avatar.screenshot(path=str(temporary))
         content = temporary.read_bytes()
         if not content:
             raise OSError("captured avatar was empty")
-        return temporary, hashlib.sha256(content).hexdigest()
+        return temporary, hashlib.sha256(content).hexdigest(), False
     except Exception:
         temporary.unlink(missing_ok=True)
-        return None, None
+        return None, None, True
 
 
 def _opaque_identity(source: str, value: str) -> str:
     digest = hashlib.sha256(f"{source}\0{value}".encode("utf-8")).hexdigest()
     return f"{source}:{digest}"
+
+
+_VOLATILE_AVATAR_QUERY_KEYS = {
+    "auth_key", "expires", "signature", "timestamp", "ts", "x-expires",
+    "x-signature", "x-tos-signature", "x-bce-date", "x-bce-expire", "x-bce-signature",
+}
+
+
+def _normalized_avatar_source(source: str) -> str:
+    """Remove only well-known expiring CDN query fields before fingerprinting."""
+    try:
+        parsed = urlsplit(source)
+        query = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.casefold() not in _VOLATILE_AVATAR_QUERY_KEYS
+        ]
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), ""))
+    except ValueError:
+        return source
 
 
 def _row_identity_hint(item) -> tuple[str | None, str | None]:
@@ -138,7 +234,7 @@ def _row_identity_hint(item) -> tuple[str | None, str | None]:
     except Exception:
         source = None
     if source:
-        return _opaque_identity("avatar", str(source)), "avatar_source"
+        return _opaque_identity("avatar", _normalized_avatar_source(str(source))), "avatar_source"
     try:
         markup = item.evaluate("el => el.outerHTML")
     except Exception:
@@ -160,7 +256,11 @@ def _scan_items(
     cache_dir: Path,
     max_scrolls: int = 20,
     capture_avatar: Callable[[str | None], bool] | None = None,
-) -> list[_ScannedItem]:
+    avatar_timeout_ms: int = 2_000,
+    deadline: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    progress: Callable[[str, int, int | None], None] | None = None,
+) -> tuple[list[_ScannedItem], bool]:
     """Read visible conversation rows while keeping avatar failures non-fatal."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     conversations = page.locator(selectors.conversation)
@@ -169,7 +269,19 @@ def _scan_items(
     seen: set[str] = set()
     missing_counts: Counter[str] = Counter()
 
+    partial_timeout = False
+    try:
+        scrollable.first.wait_for(state="visible", timeout=avatar_timeout_ms)
+    except AttributeError:  # test doubles do not implement wait_for
+        pass
+    if progress:
+        progress("locating_chat_list", 0, None)
     for _ in range(max_scrolls + 1):
+        if deadline is not None and monotonic() >= deadline:
+            partial_timeout = True
+            break
+        if progress:
+            progress("scanning_rows", len(items), None)
         visible: list[tuple[object, str, str | None, str | None, int]] = []
         for index in range(conversations.count()):
             item = conversations.nth(index)
@@ -182,14 +294,29 @@ def _scan_items(
             identity_key, identity_source = _row_identity_hint(item)
             visible.append((item, name, identity_key, identity_source, index))
         for item, name, identity_key, identity_source, row_index in visible:
+            if deadline is not None and monotonic() >= deadline:
+                partial_timeout = True
+                break
             should_capture = (
                 capture_avatar is None
                 or capture_avatar(identity_key)
             )
             if should_capture:
-                temporary, avatar_hash = _capture_temporary_avatar(item, cache_dir)
+                if progress:
+                    progress("updating_avatars", len(items), None)
+                remaining_avatar_timeout = avatar_timeout_ms
+                if deadline is not None:
+                    remaining_avatar_timeout = max(
+                        1, min(avatar_timeout_ms, int((deadline - monotonic()) * 1000))
+                    )
+                    if remaining_avatar_timeout <= 1:
+                        partial_timeout = True
+                        break
+                temporary, avatar_hash, avatar_capture_failed = _capture_temporary_avatar(
+                    item, cache_dir, remaining_avatar_timeout
+                )
             else:
-                temporary, avatar_hash = None, None
+                temporary, avatar_hash, avatar_capture_failed = None, None, False
             if identity_key is None and avatar_hash is not None:
                 identity_key = _opaque_identity("pixels", f"{name}\0{avatar_hash}")
                 identity_source = "avatar_pixels"
@@ -201,6 +328,11 @@ def _scan_items(
                     "unresolved", f"{name}\0{missing_counts[name]}\0{uuid.uuid4().hex}"
                 )
                 identity_source = "unresolved"
+            if deadline is not None and monotonic() >= deadline:
+                if temporary:
+                    temporary.unlink(missing_ok=True)
+                partial_timeout = True
+                break
             if identity_key in seen:
                 if temporary:
                     temporary.unlink(missing_ok=True)
@@ -215,8 +347,12 @@ def _scan_items(
                     identity_source,
                     row_index,
                     should_capture,
+                    avatar_capture_failed,
                 )
             )
+
+        if partial_timeout:
+            break
 
         if not scrollable.count():
             break
@@ -234,7 +370,7 @@ def _scan_items(
             metrics["step"],
         )
         page.wait_for_timeout(250)
-    return items
+    return items, partial_timeout
 
 
 def _avatar_needs_refresh(path: Path, now: datetime) -> bool:
@@ -331,6 +467,11 @@ def discover_friends(
     now: Callable[[], datetime] | None = None,
     avatar_cache_dir: Path | None = None,
     force_avatar_refresh: bool = False,
+    overall_timeout_ms: int = 90_000,
+    max_scrolls: int = 20,
+    avatar_timeout_ms: int = 2_000,
+    monotonic: Callable[[], float] = time.monotonic,
+    progress: Callable[[str, int, int | None], None] | None = None,
 ) -> FriendDiscoveryResult:
     cache_dir = avatar_cache_dir or output_path.parent / "avatar-cache"
     previous = load_discovered_friends(output_path)
@@ -340,11 +481,34 @@ def discover_friends(
         if force_avatar_refresh
         else _fresh_avatar_identities(previous, cache_dir, scanned_now)
     )
-    scanned = _scan_items(
+    configured_candidate_ids = {
+        target.candidate_id
+        for target in config.targets
+        if target.candidate_id and target.enabled
+    }
+    configured_avatar_identities = {
+        candidate.identity_key
+        for candidate in (previous.candidates if previous else [])
+        if candidate.identity_key and candidate.candidate_id in configured_candidate_ids
+    }
+    def should_capture(identity_key: str | None) -> bool:
+        if force_avatar_refresh:
+            # A correction run exists to repair configured streak targets.  The
+            # full list is still read, but recapturing every unrelated avatar
+            # makes the real virtualized page exceed its deadline.
+            return not configured_avatar_identities or identity_key in configured_avatar_identities
+        return identity_key not in fresh_avatar_identities
+    started = monotonic()
+    scanned, partial_timeout = _scan_items(
         page,
         selectors,
         cache_dir,
-        capture_avatar=lambda identity_key: identity_key not in fresh_avatar_identities,
+        capture_avatar=should_capture,
+        max_scrolls=max_scrolls,
+        avatar_timeout_ms=avatar_timeout_ms,
+        deadline=started + overall_timeout_ms / 1000,
+        monotonic=monotonic,
+        progress=progress,
     )
     scanned_at = scanned_now.isoformat(timespec="seconds")
     scan_id = _new_local_id("scan")
@@ -353,6 +517,11 @@ def discover_friends(
         target.stable_id: target
         for target in config.targets
         if target.stable_id and _SAFE_LOCAL_ID.fullmatch(target.stable_id)
+    }
+    targets_by_candidate_id = {
+        target.candidate_id: target
+        for target in config.targets
+        if target.candidate_id and _SAFE_LOCAL_ID.fullmatch(target.candidate_id)
     }
     previous_by_identity = {
         candidate.identity_key: candidate
@@ -381,41 +550,42 @@ def discover_friends(
                 if prior and _SAFE_LOCAL_ID.fullmatch(prior.candidate_id)
                 else _candidate_id(item.identity_key)
             )
-            target = targets_by_id.get(candidate_id)
+            target = targets_by_candidate_id.get(candidate_id)
+            legacy_target = targets_by_id.get(candidate_id)
+            if target is None and legacy_target is not None and not legacy_target.candidate_id:
+                candidate_id = _candidate_id(item.identity_key)
+                legacy_target.candidate_id = candidate_id
+                targets_by_candidate_id[candidate_id] = legacy_target
+                target = legacy_target
+                config_changed = True
             if target is None and scanned_name_counts[item.name] == 1:
                 name_matches = [
                     candidate_target
                     for candidate_target in config.targets
                     if candidate_target.name == item.name
+                    and candidate_target.candidate_id is None
                     and candidate_target.stable_id not in bound_target_ids
                 ]
                 if len(name_matches) == 1:
                     target = name_matches[0]
-                    if target.stable_id and _SAFE_LOCAL_ID.fullmatch(target.stable_id):
-                        candidate_id = target.stable_id
-                    else:
-                        target.stable_id = candidate_id
-                        config_changed = True
-                    targets_by_id[candidate_id] = target
-                    bound_target_ids.add(candidate_id)
-                else:
-                    unbound = [
-                        target
-                        for target in config.targets
-                        if not target.stable_id and target.name == item.name
-                    ]
-                    if len(unbound) != 1:
-                        unbound = []
-                    if unbound:
-                        target = unbound[0]
-                        target.stable_id = candidate_id
-                        targets_by_id[candidate_id] = target
-                        bound_target_ids.add(candidate_id)
-                        config_changed = True
+                    config_changed = _ensure_target_id(target) or config_changed
+                    target.candidate_id = candidate_id
+                    targets_by_candidate_id[candidate_id] = target
+                    bound_target_ids.add(target.stable_id or candidate_id)
+                    config_changed = True
             configured_target_id = target.stable_id if target else None
             configured_enabled = target.enabled if target else None
             cache_id = configured_target_id or (prior.avatar_cache_key if prior and prior.avatar_cache_key else candidate_id)
-            match_status = "configured" if target else "unconfigured"
+            uncertain = (
+                target is None
+                and scanned_name_counts[item.name] == 1
+                and any(
+                    prior_candidate.display_name == item.name
+                    and prior_candidate.candidate_id in targets_by_candidate_id
+                    for prior_candidate in (previous.candidates if previous else [])
+                )
+            )
+            match_status = "configured" if target else "needs_reassociation" if uncertain else "unconfigured"
             if target:
                 configured_matched += 1
             avatar_cache_path, avatar_status, avatar_updated = _publish_avatar(
@@ -429,7 +599,7 @@ def discover_friends(
                 avatars_updated += 1
             elif avatar_status == "cached":
                 avatars_reused += 1
-            else:
+            elif item.avatar_capture_failed:
                 avatars_failed += 1
             if prior is None:
                 new_candidates += 1
@@ -468,7 +638,7 @@ def discover_friends(
         for candidate in previous.candidates if previous else []:
             if candidate.candidate_id in seen_previous_ids:
                 continue
-            target = targets_by_id.get(candidate.candidate_id)
+            target = targets_by_candidate_id.get(candidate.candidate_id)
             configured_target_id = target.stable_id if target else None
             configured_enabled = target.enabled if target else None
             match_status = "configured" if target else "unconfigured"
@@ -486,7 +656,7 @@ def discover_friends(
         _discard_temporary(scanned)
 
     last_result: dict[str, object] = {
-        "status": "completed",
+        "status": "partial_timeout" if partial_timeout else "completed_with_avatar_failures" if avatars_failed else "completed",
         "finished_at": scanned_at,
         "scan_id": scan_id,
         "candidates_found": len(scanned),
@@ -496,7 +666,10 @@ def discover_friends(
         "avatars_reused": avatars_reused,
         "avatars_failed": avatars_failed,
         "stale_candidates": sum(item.presence_status == "stale" for item in candidates),
+        "partial": partial_timeout,
     }
+    if progress:
+        progress("writing_cache", len(scanned), len(scanned))
     _write_discovery_payload(
         output_path,
         {
@@ -519,7 +692,7 @@ def refresh_configured_avatars(
     avatar_cache_dir: Path,
 ) -> AvatarRefreshResult:
     """Refresh only unambiguous configured-avatar associations; never edit names."""
-    scanned = _scan_items(page, selectors, avatar_cache_dir)
+    scanned, _ = _scan_items(page, selectors, avatar_cache_dir)
     by_name: dict[str, list[_ScannedItem]] = defaultdict(list)
     for item in scanned:
         by_name[item.name].append(item)
@@ -629,6 +802,8 @@ def record_discovery_failure(
     path: Path,
     error: str,
     now: Callable[[], datetime] | None = None,
+    status: str = "failed",
+    details: dict[str, object] | None = None,
 ) -> FriendDiscoveryResult:
     previous = load_discovered_friends(path)
     finished_at = (now or datetime.now)().isoformat(timespec="seconds")
@@ -636,9 +811,10 @@ def record_discovery_failure(
     scanned_at = previous.scanned_at if previous else None
     scan_id = previous.scan_id if previous else None
     last_result: dict[str, object] = {
-        "status": "failed",
+        "status": status,
         "finished_at": finished_at,
         "error": error,
+        **(details or {}),
     }
     _write_discovery_payload(
         path,

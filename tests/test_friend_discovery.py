@@ -5,6 +5,7 @@ from pathlib import Path
 from autody.chat import ChatSelectors
 from autody.config import AppConfig, Target
 from autody.friend_discovery import (
+    ScanProgress,
     discover_friends,
     is_discovery_stale,
     load_discovered_friends,
@@ -325,6 +326,96 @@ def test_avatar_source_identity_is_preferred_when_rows_lack_conversation_ids(tmp
     assert {candidate.identity_source for candidate in second.candidates} == {"avatar_source"}
 
 
+def test_avatar_url_query_changes_keep_candidate_and_target_ids_stable(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+    output = tmp_path / "data" / "discovered_friends.json"
+    config = AppConfig(targets=[Target(name="小明", stable_id="target-permanent")])
+    first = discover_friends(
+        config,
+        FakePage(selectors, [[FakeConversationItem(selectors, "小明", b"old", avatar_source="https://cdn/avatar/a.png?x-expires=1&x-signature=old")]]),
+        selectors,
+        output,
+    )
+    original_candidate = first.candidates[0].candidate_id
+    original_target = config.targets[0].stable_id
+    second = discover_friends(
+        config,
+        FakePage(selectors, [[FakeConversationItem(selectors, "小明", b"new", avatar_source="https://cdn/avatar/a.png?x-expires=2&x-signature=new")]]),
+        selectors,
+        output,
+        force_avatar_refresh=True,
+    )
+
+    assert second.candidates[0].candidate_id == original_candidate
+    assert second.candidates[0].configured_target_id == original_target
+    assert config.targets[0].stable_id == original_target
+    assert config.targets[0].candidate_id == original_candidate
+
+
+def test_deadline_saves_partial_scan_with_a_clear_status(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+    output = tmp_path / "data" / "discovered_friends.json"
+    ticks = iter([0.0, 0.0, 0.0, 2.0])
+
+    result = discover_friends(
+        AppConfig(),
+        FakePage(selectors, [[FakeConversationItem(selectors, "小明", b"avatar")]]),
+        selectors,
+        output,
+        overall_timeout_ms=1,
+        monotonic=lambda: next(ticks),
+    )
+
+    assert result.last_result["status"] == "partial_timeout"
+    assert result.last_result["partial"] is True
+    assert load_discovered_friends(output) is not None
+
+
+def test_avatar_capture_failure_does_not_block_later_rows(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+
+    class SlowAvatar(FakeAvatarLocator):
+        def screenshot(self, path: str, timeout=None):
+            raise TimeoutError(f"timed out after {timeout}")
+
+    class SlowItem(FakeConversationItem):
+        def locator(self, selector: str):
+            if selector == "img":
+                return SlowAvatar(self.avatar, self.avatar_source)
+            return super().locator(selector)
+
+    result = discover_friends(
+        AppConfig(),
+        FakePage(selectors, [[
+            SlowItem(selectors, "慢头像", b"slow", "slow-row"),
+            FakeConversationItem(selectors, "正常头像", b"fast", "fast-row"),
+        ]]),
+        selectors,
+        tmp_path / "data" / "discovered_friends.json",
+        avatar_timeout_ms=500,
+    )
+
+    assert result.last_result["status"] == "completed_with_avatar_failures"
+    assert result.last_result["avatars_failed"] == 1
+    assert next(item for item in result.candidates if item.display_name == "正常头像").avatar_status == "cached"
+
+
+def test_virtual_scan_honors_the_maximum_round_count(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+    result = discover_friends(
+        AppConfig(),
+        FakePage(selectors, [
+            [FakeConversationItem(selectors, "第一行", b"first", "first-row")],
+            [FakeConversationItem(selectors, "第二行", b"second", "second-row")],
+        ]),
+        selectors,
+        tmp_path / "data" / "discovered_friends.json",
+        max_scrolls=0,
+    )
+
+    assert [candidate.display_name for candidate in result.candidates] == ["第一行"]
+
+
 def test_discovery_preserves_candidate_identity_and_marks_missed_rows_stale(tmp_path: Path):
     selectors = ChatSelectors.test_defaults()
     output = tmp_path / "data" / "discovered_friends.json"
@@ -483,3 +574,19 @@ def test_configured_target_is_kept_when_a_later_scan_does_not_find_it(tmp_path: 
     assert [target.name for target in config.targets] == ["已配置目标"]
     assert candidate.match_status == "configured"
     assert candidate.presence_status == "stale"
+
+
+def test_scan_progress_records_the_browser_lock_release_stage(tmp_path: Path):
+    ticks = iter([0.0, 1.0, 1.5])
+    progress = ScanProgress(
+        tmp_path / "data" / "discovered_friends.json",
+        monotonic=lambda: next(ticks),
+    )
+
+    progress.update("releasing_browser_lock")
+    payload = progress.finish("completed")
+
+    assert payload["timings"] == {
+        "waiting_browser": 1.0,
+        "releasing_browser_lock": 0.5,
+    }

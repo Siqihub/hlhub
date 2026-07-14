@@ -23,6 +23,10 @@ class AuthenticationError(FatalChatError):
     pass
 
 
+class ChatPageLoadError(FatalChatError):
+    pass
+
+
 class PageChangedError(FatalChatError):
     pass
 
@@ -288,16 +292,26 @@ def open_chat(
     headless: bool = True,
     artifact_dir: Path | None = None,
     home: Path | None = None,
+    on_stage: Callable[[str], None] | None = None,
 ):
     configure_runtime(_runtime_home(profile_dir, home))
-    playwright = sync_playwright().start()
-    context = playwright.chromium.launch_persistent_context(
-        str(profile_dir), headless=headless
-    )
-    context.set_default_timeout(timeout_ms)
-    page = context.pages[0] if context.pages else context.new_page()
+    playwright = None
+    context = None
     try:
-        page.goto(CHAT_URL)
+        if on_stage:
+            on_stage("launching_chromium")
+        playwright = sync_playwright().start()
+        context = playwright.chromium.launch_persistent_context(
+            str(profile_dir), headless=headless, timeout=timeout_ms
+        )
+        context.set_default_timeout(timeout_ms)
+        page = context.pages[0] if context.pages else context.new_page()
+        if on_stage:
+            on_stage("loading_chat_page")
+        try:
+            page.goto(CHAT_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+        except PlaywrightTimeoutError as exc:
+            raise ChatPageLoadError("Douyin chat page load timed out") from exc
         if page.locator(DOUYIN_SELECTORS.verification_marker).count():
             if artifact_dir:
                 DouyinChat(page, DOUYIN_SELECTORS, artifact_dir, DOUYIN_CONFIRMATION_SELECTORS).screenshot("authentication")
@@ -310,5 +324,7 @@ def open_chat(
             raise AuthenticationError("Douyin login is unavailable; run autody login") from exc
         yield page
     finally:
-        context.close()
-        playwright.stop()
+        if context is not None:
+            context.close()
+        if playwright is not None:
+            playwright.stop()

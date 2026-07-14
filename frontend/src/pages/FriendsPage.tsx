@@ -19,6 +19,7 @@ function candidateLabel(candidate: FriendDiscovery["candidates"][number]) {
   if (candidate.presence_status === "stale") return "历史候选 · 未在本次扫描中出现";
   const { match_status: status, enabled } = candidate;
   if (status === "ambiguous") return "可能重名，未自动关联";
+  if (status === "needs_reassociation") return "需要重新关联";
   if (candidate.configured || status === "configured") return enabled ? "已添加 · 已启用" : "已添加 · 已停用";
   return "点击添加到续火目标";
 }
@@ -63,6 +64,7 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
     }
   }, [discovery?.last_result, discovery?.refresh_running, notify]);
   if (!config) return <div className="loading">加载好友配置…</div>;
+  const duplicateTargets = friends.filter((friend) => friend.ambiguous_duplicate);
 
   const scan = async () => {
     setBusyAction("scan");
@@ -158,6 +160,7 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
 
       <div className="panel form-panel">
         <div className="panel-heading"><h2>续火目标</h2><span className="inline-actions"><button className="text-button" onClick={() => void batch("enable")}>批量启用</button><button className="text-button" onClick={() => void batch("disable")}>批量停用</button><button className="text-button" onClick={() => void batch("delete")}>批量删除</button></span></div>
+        {duplicateTargets.length ? <p className="discovery-progress">检测到重复昵称的启用目标；为避免选错聊天，自动发送会跳过这些目标。</p> : null}
         <div className="friend-editor-list">
           {friends.map((friend, index) => {
             const targetId = friend.target_id || friend.id;
@@ -177,13 +180,13 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
       </div>
 
       {discovery ? <section className="panel discovery-panel">
-        <div className="panel-heading"><div><h2>识别到的候选好友</h2><small className="discovery-status">候选好友来自本地缓存{discovery.scanned_at ? ` · 上次扫描：${discovery.scanned_at.replace("T", " ")}` : ""}{discovery.stale ? " · 缓存待更新" : " · 缓存当前"}</small>{discovery.refresh_running ? <small className="discovery-progress">正在后台更新候选好友和头像…</small> : null}</div></div>
+        <div className="panel-heading"><div><h2>识别到的候选好友</h2><small className="discovery-status">候选好友来自本地缓存{discovery.scanned_at ? ` · 上次扫描：${discovery.scanned_at.replace("T", " ")}` : ""}{discovery.stale ? " · 缓存待更新" : " · 缓存当前"}</small>{discovery.refresh_running ? <small className="discovery-progress">{discovery.progress?.message ?? "正在后台更新候选好友和头像…"}{discovery.progress?.current ? `：已识别 ${discovery.progress.current}${discovery.progress.total ? ` / ${discovery.progress.total}` : ""}` : ""}</small> : null}{discovery.progress?.status === "partial_timeout" ? <small className="discovery-progress">扫描超时，已保留上次结果。</small> : null}</div></div>
         <div className="candidate-grid">{[...discovery.candidates].sort((left, right) => {
           const group = (candidate: FriendDiscovery["candidates"][number]) => candidate.presence_status === "stale" ? 2 : candidate.configured ? 1 : 0;
           return group(left) - group(right);
         }).map((candidate) => {
           const configured = candidate.configured || candidate.match_status === "configured";
-          const canAdd = !configured && candidate.presence_status !== "stale" && candidate.match_status !== "ambiguous";
+          const canAdd = !configured && candidate.presence_status !== "stale" && !["ambiguous", "needs_reassociation"].includes(candidate.match_status);
           const adding = addingCandidateId === candidate.candidate_id;
           return <button type="button" className={canAdd ? "candidate" : "candidate configured"} key={candidate.candidate_id} aria-label={`添加 ${candidate.display_name}`} disabled={!canAdd || adding} onClick={() => void addCandidate(candidate)}>
             <FriendAvatar name={candidate.display_name} url={candidate.avatar_url} />

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from autody.web_api import create_app
 from autody.history import TaskHistoryStore, TaskRunRecord
+from autody.config import Target, load_config, save_config
 
 
 def make_project(tmp_path: Path) -> Path:
@@ -462,8 +463,9 @@ def test_discovered_candidate_batch_add_keeps_its_cached_avatar_and_friend_state
     assert added.status_code == 200
     assert added.json()["added"] == 1
     friend = next(item for item in friends if item["display_name"] == "新朋友")
-    assert friend["id"] == "candidate-new"
-    assert friend["avatar_url"] == "/api/avatars/candidate-new"
+    assert friend["id"] != "candidate-new"
+    assert friend["id"].startswith("target-")
+    assert friend["avatar_url"] == f"/api/avatars/{friend['id']}"
     assert friend["today_status"] == "pending"
     assert friend["last_success_date"] is None
 
@@ -513,7 +515,8 @@ def test_candidate_add_is_idempotent_by_candidate_id_and_keeps_duplicate_names_s
     second = client.post("/api/friends/candidate-b/add-to-targets")
     discovered_after_add = client.get("/api/friends/discovered").json()["candidates"]
     friends = client.get("/api/friends").json()["friends"]
-    removed = client.patch("/api/friends/batch", json={"target_ids": ["candidate-a"], "action": "delete"})
+    target_ids = [friend["target_id"] for friend in friends if friend["target_id"]]
+    removed = client.patch("/api/friends/batch", json={"target_ids": [target_ids[0]], "action": "delete"})
     discovered_after_remove = client.get("/api/friends/discovered").json()["candidates"]
 
     assert first.status_code == 200
@@ -522,13 +525,23 @@ def test_candidate_add_is_idempotent_by_candidate_id_and_keeps_duplicate_names_s
     assert repeated.json()["created"] is False
     assert second.status_code == 200
     assert second.json()["created"] is True
-    assert [
-        friend["target_id"] for friend in friends
-        if friend["target_id"] in {"candidate-a", "candidate-b"}
-    ] == ["candidate-a", "candidate-b"]
+    assert len(target_ids) == 2
+    assert all(target_id and target_id.startswith("target-") for target_id in target_ids)
+    assert first.json()["target"]["target_id"] != "candidate-a"
     assert [candidate["configured"] for candidate in discovered_after_add] == [True, True]
     assert removed.json()["affected"] == 1
     assert [candidate["configured"] for candidate in discovered_after_remove] == [False, True]
+
+
+def test_enabled_duplicate_names_are_flagged_for_safe_sending(tmp_path: Path):
+    config = make_project(tmp_path)
+    loaded = load_config(config)
+    loaded.targets = [Target(name="同名", stable_id="target-a"), Target(name=" 同名 ", stable_id="target-b")]
+    save_config(config, loaded)
+
+    friends = TestClient(create_app(config)).get("/api/friends").json()["friends"]
+
+    assert [friend["ambiguous_duplicate"] for friend in friends] == [True, True]
 
 
 def test_refresh_avatars_starts_only_the_safe_browser_scan(tmp_path: Path):

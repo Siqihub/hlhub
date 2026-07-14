@@ -75,6 +75,28 @@ def test_fatal_chat_error_returns_blocked_result(tmp_path: Path):
     assert result.error == "需要安全验证"
 
 
+def test_duplicate_enabled_names_are_blocked_without_sending_ambiguous_targets(tmp_path: Path):
+    config = make_config(tmp_path)
+    config.targets = [Target(name="同名"), Target(name="同名"), Target(name="唯一")]
+    chat = FakeChat()
+
+    result = run_daily(config, chat, date(2026, 7, 14))
+
+    assert result.status is RunStatus.BLOCKED_AMBIGUOUS_TARGET
+    assert [target for target, _ in chat.sent] == ["唯一"]
+    state = json.loads(config.state_file.read_text(encoding="utf-8"))
+    assert state["daily"]["2026-07-14"]["failures"]["同名"] == "blocked_ambiguous_target"
+
+
+def test_unique_names_continue_to_send_normally(tmp_path: Path):
+    config, chat = make_config(tmp_path), FakeChat()
+
+    result = run_daily(config, chat, date(2026, 7, 14))
+
+    assert result.status is RunStatus.COMPLETED
+    assert [target for target, _ in chat.sent] == ["小明", "小红"]
+
+
 def test_suffix_is_send_only_and_state_tracks_base_message(tmp_path: Path):
     config, chat = make_config(tmp_path), FakeChat()
     original = config.messages_file.read_text(encoding="utf-8")

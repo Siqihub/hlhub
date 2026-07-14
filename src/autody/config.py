@@ -11,6 +11,7 @@ class Target(BaseModel):
     enabled: bool = True
     note: str = ""
     stable_id: str | None = None
+    candidate_id: str | None = None
     message_pack: str | None = None
     suffix_override: str | None = None
 
@@ -57,6 +58,10 @@ class AppConfig(BaseModel):
     completion_notifications_enabled: bool = True
     log_retention_days: int = Field(default=30, ge=7, le=3650)
     mask_log_friend_names: bool = True
+    friend_scan_lock_timeout_ms: int = Field(default=5_000, ge=1_000, le=30_000)
+    friend_scan_overall_timeout_ms: int = Field(default=90_000, ge=10_000, le=300_000)
+    friend_scan_max_rounds: int = Field(default=20, ge=1, le=100)
+    avatar_capture_timeout_ms: int = Field(default=2_000, ge=500, le=30_000)
 
     @model_validator(mode="after")
     def unique_targets(self):
@@ -66,6 +71,9 @@ class AppConfig(BaseModel):
         stable_ids = [target.stable_id for target in self.targets if target.stable_id]
         if len(stable_ids) != len(set(stable_ids)):
             raise ValueError("target stable IDs must be unique")
+        candidate_ids = [target.candidate_id for target in self.targets if target.candidate_id]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("target candidate IDs must be unique")
         if self.message_pack_index_url is not None:
             self.message_pack_index_url = self.message_pack_index_url.strip() or None
         if self.recovery_deadline < self.daily_send_time:
@@ -125,6 +133,10 @@ def save_config(path: Path, config: AppConfig) -> None:
         "completion_notifications_enabled": config.completion_notifications_enabled,
         "log_retention_days": config.log_retention_days,
         "mask_log_friend_names": config.mask_log_friend_names,
+        "friend_scan_lock_timeout_ms": config.friend_scan_lock_timeout_ms,
+        "friend_scan_overall_timeout_ms": config.friend_scan_overall_timeout_ms,
+        "friend_scan_max_rounds": config.friend_scan_max_rounds,
+        "avatar_capture_timeout_ms": config.avatar_capture_timeout_ms,
     }
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(

@@ -5,12 +5,14 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import threading
+import time
 import webbrowser
 
 import typer
 import uvicorn
 
 from autody.chat import (
+    ChatPageLoadError,
     DOUYIN_CONFIRMATION_SELECTORS,
     DOUYIN_SELECTORS,
     AuthenticationError,
@@ -21,6 +23,7 @@ from autody.chat import (
 )
 from autody.config import AppConfig, load_config, save_config
 from autody.friend_discovery import (
+    ScanProgress,
     discover_friends,
     is_discovery_stale,
     load_discovered_friends,
@@ -69,6 +72,80 @@ def _write_attention(config: AppConfig, message: str) -> None:
 
 def _clear_attention(config: AppConfig) -> None:
     (config.state_file.parent / "notifications" / "need-attention.txt").unlink(missing_ok=True)
+
+
+def _run_friend_scan(
+    loaded: AppConfig,
+    config_path: Path,
+    discovery_path: Path,
+    *,
+    force_avatar_refresh: bool,
+):
+    """Run the read-only browser scan with bounded stages and dashboard progress."""
+    progress = ScanProgress(discovery_path)
+    overall_deadline = time.monotonic() + loaded.friend_scan_overall_timeout_ms / 1000
+    result = None
+    try:
+        progress.update("waiting_browser")
+        with SingleInstanceLock(
+            loaded.lock_file,
+            timeout_seconds=loaded.friend_scan_lock_timeout_ms / 1000,
+        ):
+            try:
+                remaining_ms = max(1_000, int((overall_deadline - time.monotonic()) * 1000))
+                if remaining_ms <= 1_000:
+                    raise TimeoutError("friend scan overall deadline expired while waiting for browser")
+                progress.update("launching_chromium")
+                with open_chat(
+                    loaded.profile_dir,
+                    min(loaded.page_load_timeout_ms, remaining_ms),
+                    True,
+                    loaded.artifact_dir,
+                    home=_project_root(config_path),
+                    on_stage=progress.update,
+                ) as page:
+                    remaining_ms = max(1, int((overall_deadline - time.monotonic()) * 1000))
+                    result = discover_friends(
+                        loaded,
+                        page,
+                        DOUYIN_SELECTORS,
+                        discovery_path,
+                        force_avatar_refresh=force_avatar_refresh,
+                        overall_timeout_ms=remaining_ms,
+                        max_scrolls=loaded.friend_scan_max_rounds,
+                        avatar_timeout_ms=loaded.avatar_capture_timeout_ms,
+                        progress=progress.update,
+                    )
+                    if result.config_changed:
+                        save_config(config_path, loaded)
+            finally:
+                progress.update("releasing_browser_lock")
+        progress.finish(
+            str(result.last_result.get("status", "completed")),
+            rows_found=result.last_result.get("candidates_found", 0),
+            avatars_reused=result.last_result.get("avatars_reused", 0),
+            avatars_updated=result.last_result.get("avatars_updated", 0),
+            avatar_failures=result.last_result.get("avatars_failed", 0),
+        )
+        return result
+    except TaskAlreadyRunning:
+        progress.finish("lock_busy")
+        raise
+    except AuthenticationError:
+        progress.finish("login_unavailable")
+        raise
+    except ChatPageLoadError:
+        progress.finish("page_load_failed")
+        raise
+    except KeyboardInterrupt:
+        progress.finish("cancelled")
+        raise
+    except TimeoutError:
+        progress.finish("partial_timeout" if result else "page_load_failed")
+        raise
+    except Exception:
+        progress.finish("page_load_failed")
+        raise
 
 
 def _send_activity_path(config: AppConfig) -> Path:
@@ -231,27 +308,13 @@ def scan_friends(
         typer.echo("每日发送任务正在运行，候选扫描已延后。")
         return
     try:
-        with SingleInstanceLock(loaded.lock_file):
-            configure_runtime(_project_root(config))
-            setup_logging(loaded)
-            with open_chat(
-                loaded.profile_dir,
-                loaded.page_load_timeout_ms,
-                True,
-                loaded.artifact_dir,
-                home=_project_root(config),
-            ) as page:
-                result = discover_friends(
-                    loaded,
-                    page,
-                    DOUYIN_SELECTORS,
-                    discovery_path,
-                    force_avatar_refresh=not background,
-                )
-                if result.config_changed:
-                    save_config(config, loaded)
-            logging.info("好友识别完成：发现 %s 个候选", len(result.candidates))
-            typer.echo(f"好友识别完成：发现 {len(result.candidates)} 个候选。")
+        configure_runtime(_project_root(config))
+        setup_logging(loaded)
+        result = _run_friend_scan(
+            loaded, config, discovery_path, force_avatar_refresh=not background
+        )
+        logging.info("好友识别完成：发现 %s 个候选", len(result.candidates))
+        typer.echo(f"好友识别完成：发现 {len(result.candidates)} 个候选。")
     except TaskAlreadyRunning:
         _busy()
     except FatalChatError as exc:
@@ -274,28 +337,16 @@ def refresh_friend_avatars(
     loaded = load_config(config)
     discovery_path = loaded.state_file.parent / "discovered_friends.json"
     try:
-        with SingleInstanceLock(loaded.lock_file):
-            configure_runtime(_project_root(config))
-            setup_logging(loaded)
-            with open_chat(
-                loaded.profile_dir,
-                loaded.page_load_timeout_ms,
-                True,
-                loaded.artifact_dir,
-                home=_project_root(config),
-            ) as page:
-                result = discover_friends(
-                    loaded,
-                    page,
-                    DOUYIN_SELECTORS,
-                    discovery_path,
-                    force_avatar_refresh=True,
-                )
-            if result.config_changed:
-                save_config(config, loaded)
-            message = f"头像校正完成：更新 {result.last_result.get('avatars_updated', 0)} 个，失败 {result.last_result.get('avatars_failed', 0)} 个。"
-            logging.info(message)
-            typer.echo(message)
+        configure_runtime(_project_root(config))
+        setup_logging(loaded)
+        result = _run_friend_scan(loaded, config, discovery_path, force_avatar_refresh=True)
+        message = (
+            "扫描超时，已保留上次结果。"
+            if result.last_result.get("status") == "partial_timeout"
+            else f"头像校正完成：更新 {result.last_result.get('avatars_updated', 0)} 个，失败 {result.last_result.get('avatars_failed', 0)} 个。"
+        )
+        logging.info(message)
+        typer.echo(message)
     except TaskAlreadyRunning:
         _busy()
     except FatalChatError as exc:
@@ -303,6 +354,7 @@ def refresh_friend_avatars(
         typer.echo(f"头像更新失败：{exc}", err=True)
         raise typer.Exit(3) from exc
     except Exception as exc:
+        record_discovery_failure(discovery_path, str(exc), status="page_load_failed")
         logging.exception("头像更新发生未捕获异常。")
         typer.echo("头像更新失败，请查看当天日志。", err=True)
         raise typer.Exit(1) from exc
@@ -405,8 +457,12 @@ def run(
                 logging.error(detail)
                 typer.echo(detail, err=True)
                 raise typer.Exit(2)
-            if result.status is RunStatus.BLOCKED:
-                detail = f"浏览器任务已安全停止：{result.error or '页面被阻止'}"
+            if result.status in {RunStatus.BLOCKED, RunStatus.BLOCKED_AMBIGUOUS_TARGET}:
+                detail = (
+                    "检测到重复昵称的启用目标，已阻止这些目标的自动发送。"
+                    if result.status is RunStatus.BLOCKED_AMBIGUOUS_TARGET
+                    else f"浏览器任务已安全停止：{result.error or '页面被阻止'}"
+                )
                 logging.error(detail)
                 typer.echo(detail, err=True)
                 raise typer.Exit(3)

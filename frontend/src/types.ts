@@ -199,7 +199,7 @@ export interface FriendCandidate {
   avatar_url: string;
   avatar_status: "cached" | "missing";
   discovered_at: string;
-  match_status: "configured" | "unconfigured" | "ambiguous";
+  match_status: "configured" | "unconfigured" | "ambiguous" | "needs_reassociation";
   configured?: boolean;
   target_id?: string | null;
   enabled?: boolean | null;
@@ -219,7 +219,7 @@ export interface FriendDiscovery {
   stale: boolean;
   refresh_running: boolean;
   last_result: {
-    status?: "completed" | "failed" | "deferred";
+    status?: "completed" | "completed_with_avatar_failures" | "partial_timeout" | "lock_busy" | "login_unavailable" | "page_load_failed" | "cancelled" | "failed" | "deferred";
     finished_at?: string;
     candidates_found?: number;
     new_candidates?: number;
@@ -227,6 +227,7 @@ export interface FriendDiscovery {
     avatars_failed?: number;
     error?: string;
   };
+  progress?: { running?: boolean; message?: string; current?: number; total?: number | null; status?: string };
   candidates: FriendCandidate[];
 }
 
@@ -240,4 +241,5 @@ export interface ConfiguredFriend {
   avatar_status: "cached" | "missing";
   today_status: "success" | "failed" | "pending";
   last_success_date: string | null;
+  ambiguous_duplicate?: boolean;
 }

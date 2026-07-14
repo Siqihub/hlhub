@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import time
 
 
 class TaskAlreadyRunning(RuntimeError):
@@ -7,9 +8,11 @@ class TaskAlreadyRunning(RuntimeError):
 
 
 class SingleInstanceLock:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, timeout_seconds: float = 0.0, poll_interval: float = 0.05):
         self.path = path
         self.file = None
+        self.timeout_seconds = max(0.0, timeout_seconds)
+        self.poll_interval = max(0.001, poll_interval)
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -19,19 +22,24 @@ class SingleInstanceLock:
             self.file.write(b"0")
             self.file.flush()
         self.file.seek(0)
-        try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            self.file.close()
-            self.file = None
-            raise TaskAlreadyRunning(
-                "已有 AutoDy 任务正在运行，本次跳过。"
-            ) from exc
+        deadline = time.monotonic() + self.timeout_seconds
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    self.file.close()
+                    self.file = None
+                    raise TaskAlreadyRunning(
+                        "已有 AutoDy 任务正在运行，本次跳过。"
+                    ) from exc
+                time.sleep(self.poll_interval)
         return self
 
     def __exit__(self, *_):
