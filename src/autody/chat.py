@@ -5,6 +5,7 @@ from enum import Enum
 import re
 import time
 from pathlib import Path
+from typing import Callable
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
@@ -261,6 +262,7 @@ def login(
     profile_dir: Path,
     timeout_ms: int = 300_000,
     home: Path | None = None,
+    on_ready: Callable[[Page], None] | None = None,
 ) -> None:
     configure_runtime(_runtime_home(profile_dir, home))
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -268,10 +270,13 @@ def login(
         context = playwright.chromium.launch_persistent_context(
             str(profile_dir), headless=False
         )
+        context.set_default_timeout(10_000)
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(CHAT_URL)
             page.locator(DOUYIN_SELECTORS.login_marker).wait_for(timeout=timeout_ms)
+            if on_ready is not None:
+                on_ready(page)
         finally:
             context.close()
 

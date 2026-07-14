@@ -202,10 +202,27 @@ export interface FriendCandidate {
   match_status: "configured" | "unconfigured" | "ambiguous";
   configured_target_id: string | null;
   configured_enabled: boolean | null;
+  avatar_cache_key?: string | null;
+  avatar_updated_at?: string | null;
+  first_discovered_at?: string | null;
+  last_seen_at?: string | null;
+  last_scan_id?: string | null;
+  presence_status?: "current" | "stale";
 }
 
 export interface FriendDiscovery {
   scanned_at: string | null;
+  stale: boolean;
+  refresh_running: boolean;
+  last_result: {
+    status?: "completed" | "failed" | "deferred";
+    finished_at?: string;
+    candidates_found?: number;
+    new_candidates?: number;
+    avatars_updated?: number;
+    avatars_failed?: number;
+    error?: string;
+  };
   candidates: FriendCandidate[];
 }
 

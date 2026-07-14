@@ -1,5 +1,5 @@
 import { Plus, Radar, RefreshCw, Save, Trash2, UserPlus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { AppConfig, ConfiguredFriend, FriendDiscovery } from "../types";
 
@@ -15,7 +15,9 @@ function todayLabel(status: ConfiguredFriend["today_status"] | undefined) {
   return "今日待执行";
 }
 
-function candidateLabel(status: FriendDiscovery["candidates"][number]["match_status"], enabled: boolean | null) {
+function candidateLabel(candidate: FriendDiscovery["candidates"][number]) {
+  if (candidate.presence_status === "stale") return "历史候选 · 未在本次扫描中出现";
+  const { match_status: status, configured_enabled: enabled } = candidate;
   if (status === "ambiguous") return "可能重名，未自动关联";
   if (status === "configured") return enabled ? "已配置 · 已启用" : "已配置 · 已停用";
   return "未配置";
@@ -28,6 +30,7 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchSelected, setBatchSelected] = useState<Set<string>>(() => new Set());
   const [busyAction, setBusyAction] = useState<"scan" | "avatar" | null>(null);
+  const refreshWasRunning = useRef(false);
 
   const load = async () => {
     try {
@@ -43,6 +46,22 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
   };
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    if (!discovery?.refresh_running) return;
+    const id = window.setInterval(() => { void load(); }, 2000);
+    return () => window.clearInterval(id);
+  }, [discovery?.refresh_running]);
+  useEffect(() => {
+    if (discovery?.refresh_running) {
+      refreshWasRunning.current = true;
+      return;
+    }
+    if (refreshWasRunning.current && discovery?.last_result?.status === "completed") {
+      const result = discovery.last_result;
+      notify(`扫描完成：发现 ${result.candidates_found ?? 0} 个聊天对象，新增候选 ${result.new_candidates ?? 0} 个，更新头像 ${result.avatars_updated ?? 0} 个，失败 ${result.avatars_failed ?? 0} 个。`);
+      refreshWasRunning.current = false;
+    }
+  }, [discovery?.last_result, discovery?.refresh_running, notify]);
   if (!config) return <div className="loading">加载好友配置…</div>;
 
   const friendByName = new Map(friends.map((friend) => [friend.display_name, friend]));
@@ -147,13 +166,13 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
       </div>
 
       {discovery ? <section className="panel discovery-panel">
-        <div className="panel-heading"><h2>识别到的候选好友</h2><button className="text-button" disabled={!selected.size} onClick={() => void addSelected()}><UserPlus size={16} />添加所选好友</button></div>
+        <div className="panel-heading"><div><h2>识别到的候选好友</h2><small className="discovery-status">候选好友来自本地缓存{discovery.scanned_at ? ` · 上次扫描：${discovery.scanned_at.replace("T", " ")}` : ""}{discovery.stale ? " · 缓存待更新" : " · 缓存当前"}</small>{discovery.refresh_running ? <small className="discovery-progress">正在后台更新候选好友和头像…</small> : null}</div><button className="text-button" disabled={!selected.size} onClick={() => void addSelected()}><UserPlus size={16} />添加所选好友</button></div>
         <div className="candidate-grid">{discovery.candidates.map((candidate) => {
-          const selectable = candidate.match_status === "unconfigured";
+          const selectable = candidate.match_status === "unconfigured" && candidate.presence_status !== "stale";
           return <label className={selectable ? "candidate" : "candidate configured"} key={candidate.candidate_id}>
             <input type="checkbox" aria-label={`选择 ${candidate.display_name}`} disabled={!selectable} checked={selected.has(candidate.candidate_id)} onChange={(event) => { const next = new Set(selected); if (event.target.checked) next.add(candidate.candidate_id); else next.delete(candidate.candidate_id); setSelected(next); }} />
             <FriendAvatar name={candidate.display_name} url={candidate.avatar_url} />
-            <span>{candidate.display_name}</span><small>{candidateLabel(candidate.match_status, candidate.configured_enabled)}</small>
+            <span>{candidate.display_name}</span><small>{candidateLabel(candidate)}</small>
           </label>;
         })}</div>
       </section> : null}

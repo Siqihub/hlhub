@@ -66,7 +66,8 @@ def test_custom_icon_exists_and_is_included_with_message_packs():
 
 def test_portable_builder_excludes_sensitive_data():
     text = Path("scripts/build-portable.ps1").read_text(encoding="utf-8-sig")
-    for token in [".venv", "browser-profile", "avatar-cache", "config.yaml", "data", "node_modules"]:
+    for token in [".venv", "browser-profile", "avatar-cache", "discovered_friends", "config.yaml", "data", "node_modules"]:
         assert token in text
     assert "Compress-Archive" in text
     assert "data/avatar-cache/" in Path(".gitignore").read_text(encoding="utf-8")
+    assert "data/discovered_friends.json" in Path(".gitignore").read_text(encoding="utf-8")

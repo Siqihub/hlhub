@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import threading
@@ -19,7 +20,13 @@ from autody.chat import (
     open_chat,
 )
 from autody.config import AppConfig, load_config, save_config
-from autody.friend_discovery import discover_friends, refresh_configured_avatars
+from autody.friend_discovery import (
+    discover_friends,
+    is_discovery_stale,
+    load_discovered_friends,
+    record_discovery_failure,
+    refresh_configured_avatars,
+)
 from autody.locking import SingleInstanceLock, TaskAlreadyRunning
 from autody.logging_setup import setup_logging
 from autody.messages import read_messages
@@ -33,6 +40,7 @@ from autody.web_api import create_app
 app = typer.Typer(no_args_is_help=True, help="抖音每日续火花工具")
 BUSY_MESSAGE = "已有 AutoDy 任务正在运行，本次跳过。"
 TRIGGER_SOURCES = {"scheduled", "manual", "startup_recovery", "retry"}
+SEND_ACTIVITY_MAX_AGE_SECONDS = 6 * 60 * 60
 
 
 def _project_root(config_path: Path) -> Path:
@@ -64,6 +72,38 @@ def _clear_attention(config: AppConfig) -> None:
     (config.state_file.parent / "notifications" / "need-attention.txt").unlink(missing_ok=True)
 
 
+def _send_activity_path(config: AppConfig) -> Path:
+    return config.lock_file.parent / "daily-send-active.json"
+
+
+def _sending_active(config: AppConfig) -> bool:
+    path = _send_activity_path(config)
+    if not path.is_file():
+        return False
+    try:
+        age = datetime.now().timestamp() - path.stat().st_mtime
+    except OSError:
+        return False
+    if age > SEND_ACTIVITY_MAX_AGE_SECONDS:
+        path.unlink(missing_ok=True)
+        return False
+    return True
+
+
+@contextmanager
+def _sending_activity(config: AppConfig):
+    path = _send_activity_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"pid": os.getpid(), "started_at": datetime.now().isoformat(timespec="seconds")}),
+        encoding="utf-8",
+    )
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
 @app.command("check-config")
 def check_config(config: Path = typer.Option(Path("config.yaml"), "--config")):
     loaded = load_config(config)
@@ -79,10 +119,43 @@ def login(config: Path = typer.Option(Path("config.yaml"), "--config")):
     try:
         with SingleInstanceLock(loaded.lock_file):
             configure_runtime(_project_root(config))
+            setup_logging(loaded)
             typer.echo("浏览器将打开，请扫码登录；检测到聊天列表后会自动保存并关闭。")
-            browser_login(loaded.profile_dir, home=_project_root(config))
+            scan_message = "候选好友扫描未启动。"
+
+            def scan_after_login(page) -> None:
+                nonlocal scan_message
+                try:
+                    result = discover_friends(
+                        loaded,
+                        page,
+                        DOUYIN_SELECTORS,
+                        loaded.state_file.parent / "discovered_friends.json",
+                    )
+                    if result.config_changed:
+                        save_config(config, loaded)
+                    scan_message = f"候选好友已刷新：发现 {len(result.candidates)} 个记录。"
+                    logging.info(scan_message)
+                except Exception as exc:
+                    error = str(exc)
+                    try:
+                        record_discovery_failure(
+                            loaded.state_file.parent / "discovered_friends.json",
+                            error=error,
+                        )
+                    except Exception:
+                        logging.exception("登录后的候选好友扫描失败，且无法保存失败状态。")
+                    scan_message = f"候选好友扫描失败：{error}"
+                    logging.warning(scan_message)
+
+            browser_login(
+                loaded.profile_dir,
+                home=_project_root(config),
+                on_ready=scan_after_login,
+            )
             _write_health(loaded, "success")
             typer.echo("登录状态已保存。")
+            typer.echo(scan_message)
     except TaskAlreadyRunning:
         _busy()
 
@@ -103,7 +176,10 @@ def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
             ) as page:
                 logging.info("登录状态和抖音聊天页正常。")
                 _write_health(loaded, "success")
-                if loaded.startup_recovery_enabled and recovery_due(loaded, StateStore(loaded.state_file).load(), datetime.now()):
+                should_recover = loaded.startup_recovery_enabled and recovery_due(
+                    loaded, StateStore(loaded.state_file).load(), datetime.now()
+                )
+                if should_recover:
                     logging.info("检测到今日任务错过，启动同日恢复运行。")
                     chat = DouyinChat(
                         page,
@@ -113,7 +189,22 @@ def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
                         confirmation_delay_ms=max(250, loaded.confirmation_timeout_ms // 3),
                         friend_search_timeout_ms=loaded.friend_search_timeout_ms,
                     )
-                    run_daily(loaded, chat, trigger_source="startup_recovery")
+                    with _sending_activity(loaded):
+                        run_daily(loaded, chat, trigger_source="startup_recovery")
+                else:
+                    discovery_path = loaded.state_file.parent / "discovered_friends.json"
+                    cached = load_discovered_friends(discovery_path)
+                    if is_discovery_stale(cached.scanned_at if cached else None):
+                        try:
+                            result = discover_friends(
+                                loaded, page, DOUYIN_SELECTORS, discovery_path
+                            )
+                            if result.config_changed:
+                                save_config(config, loaded)
+                            logging.info("登录健康检查已刷新候选好友：发现 %s 个记录。", len(result.candidates))
+                        except Exception as exc:
+                            record_discovery_failure(discovery_path, str(exc))
+                            logging.warning("登录健康检查后的候选好友扫描失败：%s", exc)
     except TaskAlreadyRunning:
         _busy()
         return
@@ -131,8 +222,15 @@ def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
 
 
 @app.command("scan-friends")
-def scan_friends(config: Path = typer.Option(Path("config.yaml"), "--config")):
+def scan_friends(
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    background: bool = typer.Option(False, "--background", help="后台缓存刷新，不重复截取未过期头像"),
+):
     loaded = load_config(config)
+    discovery_path = loaded.state_file.parent / "discovered_friends.json"
+    if _sending_active(loaded):
+        typer.echo("每日发送任务正在运行，候选扫描已延后。")
+        return
     try:
         with SingleInstanceLock(loaded.lock_file):
             configure_runtime(_project_root(config))
@@ -148,7 +246,8 @@ def scan_friends(config: Path = typer.Option(Path("config.yaml"), "--config")):
                     loaded,
                     page,
                     DOUYIN_SELECTORS,
-                    loaded.state_file.parent / "discovered_friends.json",
+                    discovery_path,
+                    force_avatar_refresh=not background,
                 )
                 if result.config_changed:
                     save_config(config, loaded)
@@ -157,10 +256,12 @@ def scan_friends(config: Path = typer.Option(Path("config.yaml"), "--config")):
     except TaskAlreadyRunning:
         _busy()
     except FatalChatError as exc:
+        record_discovery_failure(discovery_path, str(exc))
         logging.error("好友识别失败：%s", exc)
         typer.echo(f"好友识别失败：{exc}", err=True)
         raise typer.Exit(3) from exc
     except Exception as exc:
+        record_discovery_failure(discovery_path, str(exc))
         logging.exception("好友识别发生未捕获异常。")
         typer.echo("好友识别失败，请查看当天日志。", err=True)
         raise typer.Exit(1) from exc
@@ -278,24 +379,25 @@ def run(
         return
     try:
         with SingleInstanceLock(loaded.lock_file):
-            configure_runtime(_project_root(config))
-            setup_logging(loaded)
-            with open_chat(
-                loaded.profile_dir,
-                loaded.page_load_timeout_ms,
-                loaded.headless,
-                loaded.artifact_dir,
-                home=_project_root(config),
-            ) as page:
-                chat = DouyinChat(
-                    page,
-                    DOUYIN_SELECTORS,
+            with _sending_activity(loaded):
+                configure_runtime(_project_root(config))
+                setup_logging(loaded)
+                with open_chat(
+                    loaded.profile_dir,
+                    loaded.page_load_timeout_ms,
+                    loaded.headless,
                     loaded.artifact_dir,
-                    DOUYIN_CONFIRMATION_SELECTORS,
-                    confirmation_delay_ms=max(250, loaded.confirmation_timeout_ms // 3),
-                    friend_search_timeout_ms=loaded.friend_search_timeout_ms,
-                )
-                result = run_daily(loaded, chat, trigger_source=source)
+                    home=_project_root(config),
+                ) as page:
+                    chat = DouyinChat(
+                        page,
+                        DOUYIN_SELECTORS,
+                        loaded.artifact_dir,
+                        DOUYIN_CONFIRMATION_SELECTORS,
+                        confirmation_delay_ms=max(250, loaded.confirmation_timeout_ms // 3),
+                        friend_search_timeout_ms=loaded.friend_search_timeout_ms,
+                    )
+                    result = run_daily(loaded, chat, trigger_source=source)
             _write_health(loaded, "success")
             message = "当天所有目标此前已完成。" if result.status is RunStatus.ALREADY_DONE else f"本次发送完成：成功 {result.sent_count} 个，失败 {result.failed_count} 个。"
             logging.info(message)

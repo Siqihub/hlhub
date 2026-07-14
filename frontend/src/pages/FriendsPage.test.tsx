@@ -31,6 +31,9 @@ const config = {
 
 const discovered = {
   scanned_at: "2026-07-04T12:30:00",
+  stale: true,
+  refresh_running: true,
+  last_result: { status: "completed", candidates_found: 2, avatars_updated: 1, avatars_failed: 0 },
   candidates: [
     {
       candidate_id: "friend-xiaoming", display_name: "小明", avatar_url: "/api/avatars/friend-xiaoming",
@@ -75,6 +78,8 @@ test("shows local avatars, supports selecting a discovered friend, and removes s
   expect((await screen.findAllByAltText("小明 的头像"))[0]).toHaveAttribute("loading", "lazy");
   expect(screen.getByText(/今日已完成/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /导入好友|导出 CSV|导出 JSON/ })).not.toBeInTheDocument();
+  expect(screen.getByText(/候选好友来自本地缓存/)).toBeInTheDocument();
+  expect(screen.getByText("正在后台更新候选好友和头像…")).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "扫描好友" }));
   const candidate = await screen.findByRole("checkbox", { name: "选择 新朋友" });

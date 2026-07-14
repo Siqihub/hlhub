@@ -7,7 +7,9 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import threading
 import time
+from urllib.parse import quote
 import zipfile
 
 from fastapi import FastAPI, File, HTTPException, Response, UploadFile
@@ -23,7 +25,7 @@ from autody.config import (
     load_config,
     save_config,
 )
-from autody.friend_discovery import load_discovered_friends
+from autody.friend_discovery import is_discovery_stale, load_discovered_friends
 from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, dashboard_statistics
 from autody.log_center import archive_historical_logs, archive_logs, log_summary, query_logs
 from autody.message_packs import ImportMode, MessagePackError, MessagePackService
@@ -119,8 +121,9 @@ def _avatar_id(value: str | None) -> str | None:
     return value if value and _SAFE_AVATAR_ID.fullmatch(value) else None
 
 
-def _avatar_url(value: str | None) -> str:
-    return f"/api/avatars/{_avatar_id(value) or 'missing'}"
+def _avatar_url(value: str | None, version: str | None = None) -> str:
+    url = f"/api/avatars/{_avatar_id(value) or 'missing'}"
+    return f"{url}?v={quote(version, safe='')}" if version else url
 
 
 def _avatar_path(cache_dir: Path, identifier: str) -> Path:
@@ -279,6 +282,47 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     app = FastAPI(title="AutoDy", docs_url=None, redoc_url=None)
     task_cache: dict[str, object] = {"expires": 0.0, "rows": []}
     recovery_attempted: set[str] = set()
+    discovery_refresh_lock = threading.Lock()
+    discovery_refresh: dict[str, object] = {
+        "job_id": None,
+        "running": False,
+        "last_attempt": 0.0,
+    }
+
+    def refresh_running() -> bool:
+        with discovery_refresh_lock:
+            job_id = discovery_refresh["job_id"]
+            running = bool(discovery_refresh["running"])
+        if running and action_runner is None and isinstance(job_id, str):
+            job = manager.get(job_id)
+            if job is not None and job["status"] != "running":
+                with discovery_refresh_lock:
+                    discovery_refresh["running"] = False
+                return False
+        return running
+
+    def maybe_start_background_discovery(config: AppConfig) -> bool:
+        result = load_discovered_friends(
+            config.state_file.parent / "discovered_friends.json"
+        )
+        if not is_discovery_stale(result.scanned_at if result else None, current_time()):
+            return refresh_running()
+        if _login_status(config.state_file.parent / "health.json") != "success":
+            return False
+        with discovery_refresh_lock:
+            if discovery_refresh["running"]:
+                return True
+            if time.monotonic() - float(discovery_refresh["last_attempt"]) < 300:
+                return False
+            try:
+                job = run_action("background-discovery")
+            except ActionAlreadyRunning:
+                discovery_refresh["last_attempt"] = time.monotonic()
+                return False
+            discovery_refresh["job_id"] = job.get("id")
+            discovery_refresh["running"] = job.get("status") == "running"
+            discovery_refresh["last_attempt"] = time.monotonic()
+            return bool(discovery_refresh["running"])
 
     def cached_task_rows() -> list[dict]:
         if time.monotonic() >= float(task_cache["expires"]):
@@ -289,6 +333,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     @app.get("/api/status")
     def status(today: str | None = None):
         config = load_config(config_path)
+        maybe_start_background_discovery(config)
         state = StateStore(config.state_file).load()
         key = today or date.today().isoformat()
         daily = state.daily.get(
@@ -644,17 +689,33 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         except ActionAlreadyRunning as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @app.post("/api/friends/discover", status_code=202)
+    def discover_friends_now():
+        """Force one read-only scan even when the local cache is still fresh."""
+        return scan_friends()
+
     @app.get("/api/friends/discovered")
     def discovered_friends():
         config = load_config(config_path)
         result = load_discovered_friends(
             config.state_file.parent / "discovered_friends.json"
         )
+        stale = is_discovery_stale(result.scanned_at if result else None, current_time())
+        refresh_is_running = maybe_start_background_discovery(config)
         if result is None:
-            return {"scanned_at": None, "candidates": []}
+            return {
+                "scanned_at": None,
+                "stale": True,
+                "refresh_running": refresh_is_running,
+                "last_result": {},
+                "candidates": [],
+            }
         targets = {target.name: target for target in config.targets}
         return {
             "scanned_at": result.scanned_at,
+            "stale": stale,
+            "refresh_running": refresh_is_running,
+            "last_result": result.last_result,
             "candidates": [
                 {
                     "candidate_id": candidate.candidate_id,
@@ -662,7 +723,8 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "avatar_url": _avatar_url(
                         candidate.configured_target_id
                         if candidate.match_status == "configured"
-                        else candidate.candidate_id
+                        else candidate.avatar_cache_key or candidate.candidate_id,
+                        candidate.avatar_updated_at,
                     ),
                     "avatar_status": candidate.avatar_status,
                     "discovered_at": candidate.discovered_at,
@@ -679,9 +741,27 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "configured_enabled": targets[candidate.display_name].enabled
                     if candidate.display_name in targets
                     else None,
+                    "avatar_updated_at": candidate.avatar_updated_at,
+                    "first_discovered_at": candidate.first_discovered_at,
+                    "last_seen_at": candidate.last_seen_at,
+                    "last_scan_id": candidate.last_scan_id,
+                    "presence_status": candidate.presence_status,
                 }
                 for candidate in result.candidates
             ],
+        }
+
+    @app.get("/api/friends/scan-status")
+    def friend_scan_status():
+        config = load_config(config_path)
+        result = load_discovered_friends(
+            config.state_file.parent / "discovered_friends.json"
+        )
+        running = refresh_running()
+        return {
+            "refresh_running": running,
+            "stage": "opening_douyin" if running else "completed",
+            "last_result": result.last_result if result else {},
         }
 
     @app.get("/api/friends")
@@ -693,6 +773,15 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         succeeded = set(daily.get("succeeded", []))
         failures = daily.get("failures", {})
         cache_dir = config.state_file.parent / "avatar-cache"
+        discovered = load_discovered_friends(
+            config.state_file.parent / "discovered_friends.json"
+        )
+        avatar_versions = {
+            identifier: candidate.avatar_updated_at
+            for candidate in (discovered.candidates if discovered else [])
+            for identifier in [candidate.configured_target_id or candidate.candidate_id]
+            if candidate.avatar_updated_at
+        }
         friends = []
         for target in config.targets:
             identifier = _avatar_id(target.stable_id)
@@ -703,7 +792,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "display_name": target.name,
                     "enabled": target.enabled,
                     "note": target.note,
-                    "avatar_url": _avatar_url(identifier),
+                    "avatar_url": _avatar_url(identifier, avatar_versions.get(identifier)),
                     "avatar_status": avatar_status,
                     "today_status": "success" if target.name in succeeded else "failed" if target.name in failures else "pending",
                     "last_success_date": _last_success_date(state, target.name),
@@ -827,7 +916,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         config = load_config(config_path)
         page = query_logs(config.state_file.parent / "logs", config, page_size=200)
         lines = [f"{item.timestamp} {item.level} {item.task_type} [{item.status}] {item.summary}" for item in page.items]
-        manifest = {"format": "autody-diagnostics", "version": 1, "masked": True, "includes": ["recent-log-summary"], "excludes": ["sent-message-content", "cookies", "browser-profile", "avatar-cache"]}
+        manifest = {"format": "autody-diagnostics", "version": 1, "masked": True, "includes": ["recent-log-summary"], "excludes": ["sent-message-content", "cookies", "browser-profile", "avatar-cache", "discovered_friends.json"]}
         buffer = BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("manifest.json", _json_bytes(manifest))

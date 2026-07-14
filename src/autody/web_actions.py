@@ -12,6 +12,7 @@ BROWSER_ACTIONS = {
     "login",
     "health-check",
     "scan-friends",
+    "background-discovery",
     "refresh-friend-avatars",
     "startup-recovery",
     "repair-playwright",
@@ -72,6 +73,16 @@ class ActionManager:
                 str(self.config_path),
                 "--source",
                 "startup_recovery",
+            ]
+        if action == "background-discovery":
+            return [
+                sys.executable,
+                "-m",
+                "autody.cli",
+                "scan-friends",
+                "--config",
+                str(self.config_path),
+                "--background",
             ]
         if action in {
             "run",

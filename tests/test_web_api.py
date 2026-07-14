@@ -182,6 +182,7 @@ def test_diagnostic_export_explicitly_excludes_avatar_cache(tmp_path: Path):
     manifest = json.loads(archive.read("manifest.json"))
 
     assert "avatar-cache" in manifest["excludes"]
+    assert "discovered_friends.json" in manifest["excludes"]
     assert not any("avatar" in name for name in archive.namelist())
 
 
@@ -351,6 +352,81 @@ def test_scan_friends_endpoint_starts_action_and_lists_candidates(tmp_path: Path
     assert calls == ["scan-friends"]
     assert candidates.json()["candidates"][1]["display_name"] == "新朋友"
     assert candidates.json()["candidates"][1]["avatar_url"] == "/api/avatars/candidate-new"
+
+
+def test_stale_discovery_returns_cached_rows_and_starts_one_background_refresh(tmp_path: Path):
+    calls = []
+    config = make_project(tmp_path)
+    (tmp_path / "data" / "health.json").write_text('{"status":"success"}', encoding="utf-8")
+    discovered = tmp_path / "data" / "discovered_friends.json"
+    discovered.write_text(
+        json.dumps({
+            "scanned_at": "2026-07-03T08:00:00",
+            "candidates": [{
+                "candidate_id": "candidate-cached", "display_name": "缓存候选",
+                "avatar_status": "missing", "discovered_at": "2026-07-03T08:00:00",
+                "match_status": "unconfigured",
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(
+        config,
+        action_runner=lambda action: calls.append(action) or {"id": "scan-1", "action": action, "status": "running"},
+        now_provider=lambda: datetime(2026, 7, 5, 8, 0, 0),
+    ))
+
+    first = client.get("/api/friends/discovered")
+    second = client.get("/api/friends/discovered")
+
+    assert first.status_code == 200
+    assert first.json()["candidates"][0]["display_name"] == "缓存候选"
+    assert first.json()["stale"] is True
+    assert first.json()["refresh_running"] is True
+    assert second.json()["refresh_running"] is True
+    assert calls == ["background-discovery"]
+
+
+def test_fresh_discovery_does_not_start_an_unnecessary_background_refresh(tmp_path: Path):
+    calls = []
+    config = make_project(tmp_path)
+    (tmp_path / "data" / "health.json").write_text('{"status":"success"}', encoding="utf-8")
+    (tmp_path / "data" / "discovered_friends.json").write_text(
+        json.dumps({"scanned_at": "2026-07-05T08:00:00", "candidates": []}),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(
+        config,
+        action_runner=lambda action: calls.append(action) or {"id": "scan-1", "action": action, "status": "running"},
+        now_provider=lambda: datetime(2026, 7, 5, 8, 0, 0),
+    ))
+
+    response = client.get("/api/friends/discovered")
+
+    assert response.status_code == 200
+    assert response.json()["stale"] is False
+    assert response.json()["refresh_running"] is False
+    assert calls == []
+
+
+def test_dashboard_startup_uses_the_same_single_background_discovery_refresh(tmp_path: Path):
+    calls = []
+    config = make_project(tmp_path)
+    (tmp_path / "data" / "health.json").write_text('{"status":"success"}', encoding="utf-8")
+    (tmp_path / "data" / "discovered_friends.json").write_text(
+        json.dumps({"scanned_at": "2026-07-03T08:00:00", "candidates": []}),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(
+        config,
+        action_runner=lambda action: calls.append(action) or {"id": "scan-1", "action": action, "status": "running"},
+        now_provider=lambda: datetime(2026, 7, 5, 8, 0, 0),
+    ))
+
+    assert client.get("/api/status").status_code == 200
+    assert client.get("/api/status").status_code == 200
+
+    assert calls == ["background-discovery"]
 
 
 def test_discovered_candidate_batch_add_keeps_its_cached_avatar_and_friend_state(

@@ -15,3 +15,4 @@ messages.txt
 data/
 # Local avatar screenshots are personal data and are never packaged or backed up.
 data/avatar-cache/
+data/discovered_friends.json
