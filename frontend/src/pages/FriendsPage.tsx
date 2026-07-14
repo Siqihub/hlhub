@@ -6,7 +6,7 @@ import type { AppConfig, ConfiguredFriend, FriendDiscovery } from "../types";
 function FriendAvatar({ name, url }: { name: string; url?: string }) {
   const initial = name.trim().slice(0, 1) || "?";
   if (!url) return <span className="friend-avatar avatar-fallback" aria-label={`${name} 的默认头像`}>{initial}</span>;
-  return <img className="friend-avatar" src={url} alt={`${name} 的头像`} loading="lazy" />;
+  return <img key={url} className="friend-avatar" src={url} alt={`${name} 的头像`} loading="lazy" />;
 }
 
 function todayLabel(status: ConfiguredFriend["today_status"] | undefined) {
@@ -154,7 +154,7 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
         <div><h1>好友管理</h1><p>扫描仅读取当前聊天列表并缓存本地缩略头像；不会上传头像，也不会自动修改昵称。</p></div>
         <div className="header-actions">
           <button className="action-button" disabled={busyAction !== null} onClick={() => void scan()}><Radar size={17} />{busyAction === "scan" ? "扫描中…" : "扫描好友"}</button>
-          <button className="action-button" disabled={busyAction !== null} onClick={() => void refreshAvatars()}><RefreshCw size={17} />{busyAction === "avatar" ? "校正中…" : "重新扫描并校正头像"}</button>
+          <button className="action-button" disabled={busyAction !== null} onClick={() => void refreshAvatars()}><RefreshCw size={17} />{busyAction === "avatar" ? "校正中…" : "重新扫描并修正头像对应关系"}</button>
         </div>
       </header>
 

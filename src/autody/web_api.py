@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import date, datetime
+from email.utils import formatdate
 from io import BytesIO, StringIO
 import csv
 import json
@@ -7,7 +8,6 @@ import os
 from pathlib import Path
 import platform
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -132,18 +132,6 @@ def _avatar_url(value: str | None, version: str | None = None) -> str:
 
 def _avatar_path(cache_dir: Path, identifier: str) -> Path:
     return cache_dir / f"{identifier}.png"
-
-
-def _copy_candidate_avatar(cache_dir: Path, candidate, target: Target) -> None:
-    if not target.stable_id:
-        return
-    source = _avatar_path(cache_dir, candidate.avatar_cache_key or candidate.candidate_id)
-    destination = _avatar_path(cache_dir, target.stable_id)
-    if source.is_file() and not destination.exists():
-        try:
-            shutil.copyfile(source, destination)
-        except OSError:
-            pass
 
 
 def _last_success_date(state, name: str) -> str | None:
@@ -756,7 +744,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                 {
                     "candidate_id": candidate.candidate_id,
                     "display_name": candidate.display_name,
-                    "avatar_url": _avatar_url(candidate.avatar_cache_key or candidate.candidate_id, candidate.avatar_updated_at),
+                    "avatar_url": _avatar_url(candidate.avatar_cache_key or candidate.candidate_id, candidate.avatar_updated_at) if candidate.avatar_status == "cached" else "",
                     "avatar_version": candidate.avatar_updated_at,
                     "avatar_status": candidate.avatar_status,
                     "discovered_at": candidate.discovered_at,
@@ -767,6 +755,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "configured_target_id": targets[candidate.candidate_id].stable_id if candidate.candidate_id in targets else None,
                     "configured_enabled": targets[candidate.candidate_id].enabled if candidate.candidate_id in targets else None,
                     "avatar_updated_at": candidate.avatar_updated_at,
+                    "avatar_cache_key": candidate.avatar_cache_key,
                     "first_discovered_at": candidate.first_discovered_at,
                     "last_seen_at": candidate.last_seen_at,
                     "last_scan_id": candidate.last_scan_id,
@@ -803,11 +792,9 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         discovered = load_discovered_friends(
             config.state_file.parent / "discovered_friends.json"
         )
-        avatar_versions = {
-            identifier: candidate.avatar_updated_at
+        candidates_by_id = {
+            candidate.candidate_id: candidate
             for candidate in (discovered.candidates if discovered else [])
-            for identifier in [candidate.configured_target_id or candidate.avatar_cache_key]
-            if identifier and candidate.avatar_updated_at
         }
         normalized_names: dict[str, int] = defaultdict(int)
         for target in config.targets:
@@ -816,7 +803,13 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         friends = []
         for target in config.targets:
             identifier = _avatar_id(target.stable_id)
-            avatar_status = "cached" if identifier and _avatar_path(cache_dir, identifier).is_file() else "missing"
+            candidate = candidates_by_id.get(target.candidate_id or "")
+            avatar_key = (
+                candidate.avatar_cache_key or candidate.candidate_id
+                if candidate and candidate.avatar_status == "cached"
+                else None
+            )
+            avatar_status = "cached" if avatar_key and _avatar_path(cache_dir, avatar_key).is_file() else "missing"
             friends.append(
                 {
                     "id": identifier,
@@ -824,7 +817,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "display_name": target.name,
                     "enabled": target.enabled,
                     "note": target.note,
-                    "avatar_url": _avatar_url(identifier, avatar_versions.get(identifier)),
+                    "avatar_url": _avatar_url(avatar_key, candidate.avatar_updated_at if candidate else None) if avatar_status == "cached" else "",
                     "avatar_status": avatar_status,
                     "today_status": "success" if target.name in succeeded else "failed" if target.name in failures else "pending",
                     "last_success_date": _last_success_date(state, target.name),
@@ -857,7 +850,6 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                 continue
             target = Target(name=candidate.display_name, stable_id=f"target-{uuid.uuid4().hex}", candidate_id=candidate.candidate_id)
             config.targets.append(target)
-            _copy_candidate_avatar(config.state_file.parent / "avatar-cache", candidate, target)
             existing.add(candidate.candidate_id)
             added += 1
         if added:
@@ -899,7 +891,6 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             candidate_id=candidate.candidate_id,
         )
         config.targets.append(target)
-        _copy_candidate_avatar(config.state_file.parent / "avatar-cache", candidate, target)
         save_config(config_path, config)
         return {
             "created": True,
@@ -948,9 +939,15 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         config = load_config(config_path)
         cache_dir = config.state_file.parent / "avatar-cache"
         path = _avatar_path(cache_dir, identifier)
-        headers = {"Cache-Control": "private, max-age=86400"}
         if path.is_file():
+            stat = path.stat()
+            headers = {
+                "Cache-Control": "private, max-age=86400, immutable",
+                "ETag": f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"',
+                "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
+            }
             return FileResponse(path, media_type="image/png", headers=headers)
+        headers = {"Cache-Control": "private, max-age=300"}
         return Response(_FALLBACK_AVATAR, media_type="image/svg+xml", headers=headers)
 
     @app.get("/api/logs")

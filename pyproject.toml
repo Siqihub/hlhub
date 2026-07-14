@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
+  "Pillow>=10,<13",
   "playwright>=1.52,<2",
   "pydantic>=2.11,<3",
   "python-multipart>=0.0.20,<1",

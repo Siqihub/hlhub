@@ -1,6 +1,10 @@
 from datetime import datetime
+from io import BytesIO
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+from PIL import Image
 
 from autody.chat import ChatSelectors
 from autody.config import AppConfig, Target
@@ -200,8 +204,8 @@ def test_discovery_captures_avatar_and_matches_existing_target(tmp_path: Path):
     assert candidate.configured_target_id == "friend-gege"
     assert candidate.configured_enabled is False
     assert candidate.avatar_status == "cached"
-    assert candidate.avatar_cache_path == "friend-gege.png"
-    assert (cache / "friend-gege.png").read_bytes() == b"avatar-gege"
+    assert candidate.avatar_cache_path == f"{candidate.candidate_id}.png"
+    assert (cache / f"{candidate.candidate_id}.png").read_bytes() == b"avatar-gege"
     saved = json.loads(output.read_text(encoding="utf-8"))
     assert "avatar_cache_path" in saved["candidates"][1]
     assert "http" not in json.dumps(saved, ensure_ascii=False)
@@ -590,3 +594,203 @@ def test_scan_progress_records_the_browser_lock_release_stage(tmp_path: Path):
         "waiting_browser": 1.0,
         "releasing_browser_lock": 0.5,
     }
+
+
+def test_virtualized_row_reuse_keeps_each_avatar_with_its_atomic_row_snapshot(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+
+    class NoScroll:
+        def count(self):
+            return 0
+
+        @property
+        def first(self):
+            return self
+
+        def wait_for(self, **_kwargs):
+            return None
+
+    class ReusedAvatar:
+        def __init__(self, page, index):
+            self.page = page
+            self.index = index
+
+        @property
+        def first(self):
+            return self
+
+        def get_attribute(self, attribute):
+            return self.page.rows[self.page.phase][self.index]["source"] if attribute == "src" else None
+
+        def screenshot(self, path: str, timeout=None):
+            row = self.page.rows[self.page.phase][self.index]
+            Path(path).write_bytes(row["avatar"])
+            if self.index == 0:
+                self.page.phase = 1
+
+    class ReusedRow:
+        def __init__(self, page, index):
+            self.page = page
+            self.index = index
+
+        def get_attribute(self, _attribute):
+            return None
+
+        def locator(self, selector):
+            row = self.page.rows[self.page.phase][self.index]
+            if selector == self.page.selectors.conversation_name:
+                return FakeTextLocator(row["name"])
+            if selector == "img":
+                return ReusedAvatar(self.page, self.index)
+            raise AssertionError(f"unexpected selector: {selector}")
+
+    class ReusedConversationList:
+        def __init__(self, page):
+            self.page = page
+
+        def count(self):
+            return 2
+
+        def nth(self, index):
+            return ReusedRow(self.page, index)
+
+    class ReusedPage:
+        def __init__(self):
+            self.selectors = selectors
+            self.phase = 0
+            self.rows = [
+                [
+                    {"name": "甲", "source": "https://avatar/alpha", "avatar": b"avatar-alpha"},
+                    {"name": "乙", "source": "https://avatar/bravo", "avatar": b"avatar-bravo"},
+                ],
+                [
+                    {"name": "丙", "source": "https://avatar/charlie", "avatar": b"avatar-charlie"},
+                    {"name": "丁", "source": "https://avatar/delta", "avatar": b"avatar-delta"},
+                ],
+            ]
+
+        def locator(self, selector):
+            if selector == self.selectors.conversation:
+                return ReusedConversationList(self)
+            if selector == self.selectors.conversation_list:
+                return NoScroll()
+            raise AssertionError(f"unexpected selector: {selector}")
+
+    cache = tmp_path / "data" / "avatar-cache"
+    result = discover_friends(
+        AppConfig(),
+        ReusedPage(),
+        selectors,
+        tmp_path / "data" / "discovered_friends.json",
+        avatar_cache_dir=cache,
+        max_scrolls=0,
+    )
+
+    candidates = {candidate.display_name: candidate for candidate in result.candidates}
+    assert set(candidates) == {"丙", "丁"}
+    assert (cache / f"{candidates['丙'].avatar_cache_key}.png").read_bytes() == b"avatar-charlie"
+    assert (cache / f"{candidates['丁'].avatar_cache_key}.png").read_bytes() == b"avatar-delta"
+
+
+def test_avatar_capture_uses_the_same_browser_context_image_response_before_screenshot(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+    image = Image.new("RGB", (2, 2), "red")
+    image_bytes = BytesIO()
+    image.save(image_bytes, format="PNG")
+    requested = []
+
+    class Response:
+        ok = True
+
+        def body(self):
+            return image_bytes.getvalue()
+
+    class Request:
+        def get(self, source, timeout):
+            requested.append((source, timeout))
+            return Response()
+
+    class NoScreenshotAvatar(FakeAvatarLocator):
+        def screenshot(self, *_args, **_kwargs):
+            raise AssertionError("the image response should be used before screenshot fallback")
+
+    class DirectImageItem(FakeConversationItem):
+        def locator(self, selector: str):
+            if selector == "img":
+                return NoScreenshotAvatar(self.avatar, self.avatar_source)
+            return super().locator(selector)
+
+    page = FakePage(
+        selectors,
+        [[DirectImageItem(selectors, "直连头像", b"unused", "row-direct", "https://avatar/direct")]],
+    )
+    page.context = SimpleNamespace(request=Request())
+    cache = tmp_path / "data" / "avatar-cache"
+
+    result = discover_friends(
+        AppConfig(),
+        page,
+        selectors,
+        tmp_path / "data" / "discovered_friends.json",
+        avatar_cache_dir=cache,
+        max_scrolls=0,
+    )
+
+    candidate = result.candidates[0]
+    assert requested == [("https://avatar/direct", 2000)]
+    assert candidate.avatar_status == "cached"
+    assert Image.open(cache / f"{candidate.avatar_cache_key}.png").format == "PNG"
+
+
+def test_unstable_virtual_row_uses_fallback_instead_of_another_rows_avatar(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+
+    class NoScroll:
+        def count(self): return 0
+        @property
+        def first(self): return self
+        def wait_for(self, **_kwargs): return None
+
+    class FlippingRow:
+        def __init__(self, page): self.page = page
+        def get_attribute(self, _attribute): return None
+        def locator(self, selector):
+            current = self.page.rows[self.page.phase]
+            if selector == self.page.selectors.conversation_name:
+                return FakeTextLocator(current["name"])
+            if selector == "img":
+                return self
+            raise AssertionError(selector)
+        @property
+        def first(self): return self
+        def get_attribute(self, attribute):
+            return self.page.rows[self.page.phase]["source"] if attribute == "src" else None
+        def screenshot(self, path: str, timeout=None):
+            Path(path).write_bytes(self.page.rows[self.page.phase]["avatar"])
+            self.page.phase = 1 - self.page.phase
+
+    class Page:
+        def __init__(self):
+            self.selectors = selectors
+            self.phase = 0
+            self.rows = [
+                {"name": "甲", "source": "https://avatar/a", "avatar": b"a"},
+                {"name": "乙", "source": "https://avatar/b", "avatar": b"b"},
+            ]
+        def locator(self, selector):
+            if selector == self.selectors.conversation:
+                return self
+            if selector == self.selectors.conversation_list:
+                return NoScroll()
+            raise AssertionError(selector)
+        def count(self): return 1
+        def nth(self, _index): return FlippingRow(self)
+
+    result = discover_friends(
+        AppConfig(), Page(), selectors,
+        tmp_path / "data" / "discovered_friends.json",
+        avatar_cache_dir=tmp_path / "data" / "avatar-cache", max_scrolls=0,
+    )
+
+    assert result.candidates[0].avatar_status == "missing"
+    assert result.candidates[0].avatar_cache_path is None

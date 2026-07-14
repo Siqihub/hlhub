@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 import hashlib
+from io import BytesIO
 import json
 import logging
 import os
@@ -13,6 +14,8 @@ import time
 from typing import Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import uuid
+
+from PIL import Image, UnidentifiedImageError
 
 from autody.chat import ChatSelectors
 from autody.config import AppConfig, Target
@@ -154,6 +157,7 @@ class _ScannedItem:
     row_index: int
     capture_attempted: bool = True
     avatar_capture_failed: bool = False
+    association_uncertain: bool = False
 
 
 def _new_local_id(prefix: str) -> str:
@@ -172,12 +176,27 @@ def _avatar_path(cache_dir: Path, identifier: str) -> Path:
 
 
 def _capture_temporary_avatar(
-    item, cache_dir: Path, timeout_ms: int
+    page, item, cache_dir: Path, timeout_ms: int
 ) -> tuple[Path | None, str | None, bool]:
-    """Capture the rendered in-list avatar without storing its remote URL."""
+    """Capture one row avatar, preferring its browser-context image response."""
     temporary = cache_dir / f".scan-{uuid.uuid4().hex}.png"
     try:
         avatar = item.locator("img").first
+        source = avatar.get_attribute("src")
+        request = getattr(getattr(page, "context", None), "request", None)
+        if source and request is not None:
+            try:
+                response = request.get(source, timeout=timeout_ms)
+                content = response.body() if response.ok else b""
+                with Image.open(BytesIO(content)) as image:
+                    image.save(temporary, format="PNG")
+                saved = temporary.read_bytes()
+                if saved:
+                    return temporary, hashlib.sha256(saved).hexdigest(), False
+            except (OSError, UnidentifiedImageError, ValueError):
+                temporary.unlink(missing_ok=True)
+            except Exception:
+                temporary.unlink(missing_ok=True)
         try:
             avatar.screenshot(path=str(temporary), timeout=timeout_ms)
         except TypeError:  # test doubles and older Playwright bindings
@@ -282,41 +301,80 @@ def _scan_items(
             break
         if progress:
             progress("scanning_rows", len(items), None)
-        visible: list[tuple[object, str, str | None, str | None, int]] = []
         for index in range(conversations.count()):
-            item = conversations.nth(index)
-            try:
-                name = item.locator(selectors.conversation_name).inner_text().strip()
-            except Exception:
-                continue
-            if not name:
-                continue
-            identity_key, identity_source = _row_identity_hint(item)
-            visible.append((item, name, identity_key, identity_source, index))
-        for item, name, identity_key, identity_source, row_index in visible:
             if deadline is not None and monotonic() >= deadline:
                 partial_timeout = True
                 break
-            should_capture = (
-                capture_avatar is None
-                or capture_avatar(identity_key)
-            )
-            if should_capture:
-                if progress:
-                    progress("updating_avatars", len(items), None)
-                remaining_avatar_timeout = avatar_timeout_ms
-                if deadline is not None:
-                    remaining_avatar_timeout = max(
-                        1, min(avatar_timeout_ms, int((deadline - monotonic()) * 1000))
+            # Locators follow a virtualized DOM node.  Snapshot and capture a
+            # single row in one operation; never retain row locators while
+            # collecting names for the rest of the viewport.
+            accepted = None
+            last_snapshot: tuple[str, str | None, str | None] | None = None
+            for _attempt in range(2):
+                item = conversations.nth(index)
+                try:
+                    name = item.locator(selectors.conversation_name).inner_text().strip()
+                except Exception:
+                    break
+                if not name:
+                    break
+                identity_key, identity_source = _row_identity_hint(item)
+                last_snapshot = (name, identity_key, identity_source)
+                should_capture = capture_avatar is None or capture_avatar(identity_key)
+                if should_capture:
+                    if progress:
+                        progress("updating_avatars", len(items), None)
+                    remaining_avatar_timeout = avatar_timeout_ms
+                    if deadline is not None:
+                        remaining_avatar_timeout = max(
+                            1, min(avatar_timeout_ms, int((deadline - monotonic()) * 1000))
+                        )
+                        if remaining_avatar_timeout <= 1:
+                            partial_timeout = True
+                            break
+                    temporary, avatar_hash, avatar_capture_failed = _capture_temporary_avatar(
+                        page, item, cache_dir, remaining_avatar_timeout
                     )
-                    if remaining_avatar_timeout <= 1:
-                        partial_timeout = True
-                        break
-                temporary, avatar_hash, avatar_capture_failed = _capture_temporary_avatar(
-                    item, cache_dir, remaining_avatar_timeout
-                )
-            else:
-                temporary, avatar_hash, avatar_capture_failed = None, None, False
+                else:
+                    temporary, avatar_hash, avatar_capture_failed = None, None, False
+                try:
+                    verified_name = item.locator(selectors.conversation_name).inner_text().strip()
+                except Exception:
+                    verified_name = ""
+                verified_identity_key, _ = _row_identity_hint(item)
+                if name == verified_name and identity_key == verified_identity_key:
+                    accepted = (
+                        name,
+                        identity_key,
+                        identity_source,
+                        temporary,
+                        avatar_hash,
+                        avatar_capture_failed,
+                        should_capture,
+                        False,
+                    )
+                    break
+                if temporary:
+                    temporary.unlink(missing_ok=True)
+            if partial_timeout:
+                break
+            if accepted is None:
+                # A reused DOM node is unsafe evidence.  Keep a current row
+                # record with a fallback avatar rather than showing an image
+                # captured for a different nickname.
+                if last_snapshot is None:
+                    continue
+                accepted = (*last_snapshot, None, None, True, True, True)
+            (
+                name,
+                identity_key,
+                identity_source,
+                temporary,
+                avatar_hash,
+                avatar_capture_failed,
+                should_capture,
+                association_uncertain,
+            ) = accepted
             if identity_key is None and avatar_hash is not None:
                 identity_key = _opaque_identity("pixels", f"{name}\0{avatar_hash}")
                 identity_source = "avatar_pixels"
@@ -345,9 +403,10 @@ def _scan_items(
                     avatar_hash,
                     identity_key,
                     identity_source,
-                    row_index,
+                    index,
                     should_capture,
                     avatar_capture_failed,
+                    association_uncertain,
                 )
             )
 
@@ -394,6 +453,9 @@ def _publish_avatar(
     refresh_needed = force or _avatar_needs_refresh(destination, now)
     if temporary is not None and refresh_needed:
         try:
+            if destination.is_file() and temporary.read_bytes() == destination.read_bytes():
+                temporary.unlink(missing_ok=True)
+                return destination.name, "cached", False
             os.replace(temporary, destination)
             return destination.name, "cached", True
         except OSError:
@@ -481,22 +543,10 @@ def discover_friends(
         if force_avatar_refresh
         else _fresh_avatar_identities(previous, cache_dir, scanned_now)
     )
-    configured_candidate_ids = {
-        target.candidate_id
-        for target in config.targets
-        if target.candidate_id and target.enabled
-    }
-    configured_avatar_identities = {
-        candidate.identity_key
-        for candidate in (previous.candidates if previous else [])
-        if candidate.identity_key and candidate.candidate_id in configured_candidate_ids
-    }
     def should_capture(identity_key: str | None) -> bool:
         if force_avatar_refresh:
-            # A correction run exists to repair configured streak targets.  The
-            # full list is still read, but recapturing every unrelated avatar
-            # makes the real virtualized page exceed its deadline.
-            return not configured_avatar_identities or identity_key in configured_avatar_identities
+            # A correction run repairs every current candidate association.
+            return True
         return identity_key not in fresh_avatar_identities
     started = monotonic()
     scanned, partial_timeout = _scan_items(
@@ -575,7 +625,9 @@ def discover_friends(
                     config_changed = True
             configured_target_id = target.stable_id if target else None
             configured_enabled = target.enabled if target else None
-            cache_id = configured_target_id or (prior.avatar_cache_key if prior and prior.avatar_cache_key else candidate_id)
+            # Cache ownership belongs to the candidate row, never to a
+            # permanent target.  Targets resolve through their candidate_id.
+            cache_id = candidate_id
             uncertain = (
                 target is None
                 and scanned_name_counts[item.name] == 1
@@ -588,13 +640,16 @@ def discover_friends(
             match_status = "configured" if target else "needs_reassociation" if uncertain else "unconfigured"
             if target:
                 configured_matched += 1
-            avatar_cache_path, avatar_status, avatar_updated = _publish_avatar(
-                item.temporary_avatar,
-                cache_dir,
-                cache_id,
-                scanned_now,
-                force_avatar_refresh,
-            )
+            if item.association_uncertain:
+                avatar_cache_path, avatar_status, avatar_updated = None, "missing", False
+            else:
+                avatar_cache_path, avatar_status, avatar_updated = _publish_avatar(
+                    item.temporary_avatar,
+                    cache_dir,
+                    cache_id,
+                    scanned_now,
+                    force_avatar_refresh,
+                )
             if avatar_updated:
                 avatars_updated += 1
             elif avatar_status == "cached":

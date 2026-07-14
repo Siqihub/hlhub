@@ -169,9 +169,12 @@ def test_avatar_route_uses_cached_file_or_local_fallback_and_rejects_unsafe_ids(
 
     assert cached.status_code == 200
     assert cached.content == b"cached-avatar"
-    assert cached.headers["cache-control"] == "private, max-age=86400"
+    assert cached.headers["cache-control"] == "private, max-age=86400, immutable"
+    assert cached.headers["etag"]
+    assert cached.headers["last-modified"]
     assert fallback.status_code == 200
     assert fallback.headers["content-type"].startswith("image/svg+xml")
+    assert fallback.headers["cache-control"] == "private, max-age=300"
     assert unsafe.status_code == 404
 
 
@@ -465,9 +468,45 @@ def test_discovered_candidate_batch_add_keeps_its_cached_avatar_and_friend_state
     friend = next(item for item in friends if item["display_name"] == "新朋友")
     assert friend["id"] != "candidate-new"
     assert friend["id"].startswith("target-")
-    assert friend["avatar_url"] == f"/api/avatars/{friend['id']}"
+    assert friend["avatar_url"] == "/api/avatars/candidate-new"
     assert friend["today_status"] == "pending"
     assert friend["last_success_date"] is None
+
+
+def test_configured_target_resolves_its_avatar_through_linked_candidate_id(tmp_path: Path):
+    config = make_project(tmp_path)
+    loaded = load_config(config)
+    loaded.targets = [
+        Target(name="已关联", stable_id="target-one", candidate_id="candidate-one"),
+    ]
+    save_config(config, loaded)
+    (tmp_path / "data" / "discovered_friends.json").write_text(
+        json.dumps(
+            {
+                "scanned_at": "2026-07-04T12:30:00",
+                "candidates": [{
+                    "candidate_id": "candidate-one",
+                    "display_name": "已关联",
+                    "avatar_cache_key": "candidate-one",
+                    "avatar_status": "cached",
+                    "avatar_updated_at": "2026-07-04T12:30:00",
+                    "discovered_at": "2026-07-04T12:30:00",
+                    "match_status": "configured",
+                }],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    cache = tmp_path / "data" / "avatar-cache"
+    cache.mkdir(parents=True)
+    (cache / "candidate-one.png").write_bytes(b"linked-avatar")
+
+    friend = TestClient(create_app(config)).get("/api/friends").json()["friends"][0]
+
+    assert friend["target_id"] == "target-one"
+    assert friend["avatar_url"] == "/api/avatars/candidate-one?v=2026-07-04T12%3A30%3A00"
+    assert friend["avatar_status"] == "cached"
 
 
 def test_candidate_add_is_idempotent_by_candidate_id_and_keeps_duplicate_names_separate(

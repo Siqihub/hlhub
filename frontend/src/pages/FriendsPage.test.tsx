@@ -93,13 +93,15 @@ test("shows local avatars, adds a discovered friend on click, and removes candid
   await waitFor(() => expect(apiMocks.addCandidateToTargets).toHaveBeenCalledWith("candidate-new"));
   expect((await screen.findAllByText("已添加")).length).toBeGreaterThan(0);
   expect(screen.getByRole("button", { name: "添加 新朋友" })).toBeDisabled();
-  expect((await screen.findAllByAltText("新朋友 的头像")).every((avatar) => avatar.getAttribute("loading") === "lazy")).toBe(true);
+  const newFriendAvatars = await screen.findAllByAltText("新朋友 的头像");
+  expect(newFriendAvatars.every((avatar) => avatar.getAttribute("loading") === "lazy")).toBe(true);
+  expect(newFriendAvatars.map((avatar) => avatar.getAttribute("src"))).toEqual(["/api/avatars/candidate-new", "/api/avatars/candidate-new"]);
 });
 
 
 test("starts the avatar-correction scan without a send action", async () => {
   render(<FriendsPage notify={vi.fn()} />);
-  fireEvent.click(await screen.findByRole("button", { name: "重新扫描并校正头像" }));
+  fireEvent.click(await screen.findByRole("button", { name: "重新扫描并修正头像对应关系" }));
 
   await waitFor(() => expect(apiMocks.refreshFriendAvatars).toHaveBeenCalledTimes(1));
   expect(apiMocks.scanFriends).not.toHaveBeenCalled();
