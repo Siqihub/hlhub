@@ -2,7 +2,7 @@ from datetime import date
 from pathlib import Path
 
 from autody.config import AppConfig, Target
-from autody.log_center import archive_historical_logs, archive_logs, log_summary, query_logs
+from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_summary, query_logs
 
 
 def test_logs_default_to_three_days_filter_and_mask_names(tmp_path: Path):
@@ -146,3 +146,28 @@ def test_legacy_rollover_log_is_historical_and_archived_by_classification(tmp_pa
     assert page.items[0].status == "historical"
     assert archive_historical_logs(log_dir, AppConfig())
     assert not legacy.exists()
+
+
+def test_cleanup_archives_old_active_logs_and_deletes_only_old_archives(tmp_path: Path):
+    log_dir = tmp_path / "logs"; log_dir.mkdir()
+    old = log_dir / "autody-2026-06-01.log"; recent = log_dir / "autody-2026-07-14.log"
+    old.write_text("old", encoding="utf-8"); recent.write_text("recent", encoding="utf-8")
+    archive = log_dir / "archive"; archive.mkdir()
+    expired = archive / "autody-2026-04-01.log"; keep = archive / "autody-2026-07-01.log"; unrelated = archive / "notes.txt"
+    expired.write_text("expired", encoding="utf-8"); keep.write_text("keep", encoding="utf-8"); unrelated.write_text("safe", encoding="utf-8")
+
+    preview = cleanup_logs(log_dir, active_days=14, archive_days=90, today=date(2026, 7, 15), apply=False)
+    result = cleanup_logs(log_dir, active_days=14, archive_days=90, today=date(2026, 7, 15))
+
+    assert preview["to_archive"] == result["archived"] == 1
+    assert preview["to_delete"] == result["deleted"] == 1
+    assert (archive / old.name).exists() and recent.exists()
+    assert not expired.exists() and keep.exists() and unrelated.exists()
+
+
+def test_automatic_cleanup_runs_only_once_per_day(tmp_path: Path):
+    log_dir = tmp_path / "logs"; log_dir.mkdir()
+    (log_dir / "autody-2026-06-01.log").write_text("old", encoding="utf-8")
+
+    assert automatic_cleanup_once_daily(log_dir, today=date(2026, 7, 15)) is not None
+    assert automatic_cleanup_once_daily(log_dir, today=date(2026, 7, 15)) is None

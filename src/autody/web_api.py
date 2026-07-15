@@ -31,7 +31,7 @@ from autody.config import (
 from autody.account_profile import public_profile_payload
 from autody.friend_discovery import is_discovery_stale, load_discovered_friends
 from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, dashboard_statistics
-from autody.log_center import archive_historical_logs, archive_logs, log_summary, query_logs
+from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_storage_summary, log_summary, query_logs
 from autody.message_packs import ImportMode, MessagePackError, MessagePackService
 from autody.messages import read_messages
 from autody.recovery import recovery_due
@@ -289,6 +289,9 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     run_action = action_runner or manager.start
     current_time = now_provider or datetime.now
     app = FastAPI(title="AutoDy", docs_url=None, redoc_url=None)
+    # Log maintenance is deliberately best-effort and limited by its local date
+    # marker; it must never prevent the dashboard from starting.
+    automatic_cleanup_once_daily(root / "data" / "logs")
     task_cache: dict[str, object] = {"expires": 0.0, "rows": []}
     recovery_attempted: set[str] = set()
     discovery_refresh_lock = threading.Lock()
@@ -1012,6 +1015,21 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         )
         payload["scheduler"] = _tail(log_dir / "scheduler.log")
         return payload
+
+    @app.get("/api/logs/storage-summary")
+    def log_storage_summary_endpoint():
+        config = load_config(config_path)
+        return {**log_storage_summary(config.state_file.parent / "logs"), "active_retention_days": 14, "archive_retention_days": 90}
+
+    @app.post("/api/logs/cleanup-preview")
+    def log_cleanup_preview():
+        config = load_config(config_path)
+        return cleanup_logs(config.state_file.parent / "logs", apply=False)
+
+    @app.post("/api/logs/cleanup")
+    def log_cleanup():
+        config = load_config(config_path)
+        return cleanup_logs(config.state_file.parent / "logs")
 
     @app.post("/api/logs/archive")
     def archive_application_logs(before: date):

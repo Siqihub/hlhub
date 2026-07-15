@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import hashlib
+import json
+import os
 import re
 from pathlib import Path
 import shutil
@@ -18,6 +20,7 @@ LOG_LINE = re.compile(
 )
 CURRENT_LOG_NAME = re.compile(r"^autody-(\d{4}-\d{2}-\d{2})\.log$")
 LEGACY_LOG_NAME = re.compile(r"^autody\.log\.(\d{4}-\d{2}-\d{2})$")
+SCHEDULER_LOG_NAME = re.compile(r"^scheduler-(\d{4}-\d{2}-\d{2})\.log$")
 SEND_RECIPIENT = re.compile(
     r"(?P<prefix>发送(?:已确认|未确认|成功|失败)?：)(?P<name>(?!好友#)[^（(\n]{1,80}?)(?P<tail>[（(]|$)"
 )
@@ -158,7 +161,7 @@ def _group(entries: list[LogEntry]) -> list[LogEntry]:
 
 
 def _named_log_date(path: Path) -> date | None:
-    match = CURRENT_LOG_NAME.match(path.name) or LEGACY_LOG_NAME.match(path.name)
+    match = CURRENT_LOG_NAME.match(path.name) or LEGACY_LOG_NAME.match(path.name) or SCHEDULER_LOG_NAME.match(path.name)
     if not match:
         return None
     try:
@@ -171,6 +174,7 @@ def _log_files(log_dir: Path) -> list[Path]:
     files = {
         *log_dir.glob("autody-????-??-??.log"),
         *log_dir.glob("autody.log.????-??-??"),
+        *log_dir.glob("scheduler-????-??-??.log"),
     }
     legacy = log_dir / "autody.log"
     if legacy.exists():
@@ -272,3 +276,54 @@ def archive_historical_logs(log_dir: Path, config: AppConfig) -> list[Path]:
         shutil.move(str(path), destination)
         moved.append(destination)
     return moved
+
+
+def log_storage_summary(log_dir: Path) -> dict:
+    archive = log_dir / "archive"
+    active = _log_files(log_dir)
+    archived = [path for path in archive.iterdir() if path.is_file() and _named_log_date(path)] if archive.exists() else []
+    files = [*active, *archived]
+    dates = [item for item in (_named_log_date(path) for path in files) if item]
+    return {"active_files": len(active), "archived_files": len(archived), "total_bytes": sum(path.stat().st_size for path in files), "oldest_date": min(dates).isoformat() if dates else None}
+
+
+def cleanup_logs(log_dir: Path, *, active_days: int = 14, archive_days: int = 90, today: date | None = None, apply: bool = True) -> dict:
+    """Archive dated logs safely; delete only aged recognized archive entries."""
+    today = today or date.today()
+    archive = log_dir / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    keep_from = today - timedelta(days=max(3, active_days) - 1)
+    delete_before = today - timedelta(days=archive_days)
+    archive_candidates = [path for path in _log_files(log_dir) if (_named_log_date(path) or today) < keep_from]
+    delete_candidates = [path for path in archive.iterdir() if path.is_file() and not path.is_symlink() and (_named_log_date(path) and _named_log_date(path) < delete_before)]
+    result = {"to_archive": len(archive_candidates), "to_delete": len(delete_candidates), "archived": 0, "deleted": 0, "skipped": 0, "bytes": sum(path.stat().st_size for path in [*archive_candidates, *delete_candidates])}
+    if not apply:
+        return result
+    for path in archive_candidates:
+        try:
+            destination = archive / path.name
+            if destination.exists(): destination = archive / f"{path.stem}-{datetime.now():%H%M%S}{path.suffix}"
+            shutil.move(str(path), destination); result["archived"] += 1
+        except OSError: result["skipped"] += 1
+    for path in delete_candidates:
+        try:
+            if archive.resolve() not in path.resolve().parents: result["skipped"] += 1; continue
+            path.unlink(); result["deleted"] += 1
+        except OSError: result["skipped"] += 1
+    return result
+
+
+def automatic_cleanup_once_daily(log_dir: Path, *, today: date | None = None) -> dict | None:
+    """Best-effort dashboard housekeeping; errors never block normal startup."""
+    today = today or date.today()
+    state = log_dir / "cleanup-state.json"
+    try:
+        if state.is_file() and json.loads(state.read_text(encoding="utf-8")).get("date") == today.isoformat():
+            return None
+        result = cleanup_logs(log_dir, today=today)
+        temporary = state.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"date": today.isoformat(), "last_result": result}, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, state)
+        return result
+    except OSError:
+        return None
