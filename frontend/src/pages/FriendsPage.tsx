@@ -1,4 +1,4 @@
-import { Radar, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Radar, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { AppConfig, ConfiguredFriend, FriendDiscovery } from "../types";
@@ -159,21 +159,22 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
       </header>
 
       <div className="panel form-panel">
-        <div className="panel-heading"><h2>续火目标</h2><span className="inline-actions"><button className="text-button" onClick={() => void batch("enable")}>批量启用</button><button className="text-button" onClick={() => void batch("disable")}>批量停用</button><button className="text-button" onClick={() => void batch("delete")}>批量删除</button></span></div>
+        <div className="panel-heading"><h2>续火目标</h2><span className="inline-actions">{batchSelected.size ? <strong className="selection-count">已选择 {batchSelected.size} 个目标</strong> : null}<button className="text-button" onClick={() => void batch("enable")}>批量启用</button><button className="text-button" onClick={() => void batch("disable")}>批量停用</button><button className="text-button" onClick={() => void batch("delete")}>批量删除</button></span></div>
         {duplicateTargets.length ? <p className="discovery-progress">检测到重复昵称的启用目标；为避免选错聊天，自动发送会跳过这些目标。</p> : null}
         <div className="friend-editor-list">
-          {friends.map((friend, index) => {
+          {friends.map((friend) => {
             const targetId = friend.target_id || friend.id;
             if (!targetId) return null;
             const toggle = () => setBatchSelected((current) => { const next = new Set(current); if (next.has(targetId)) next.delete(targetId); else next.add(targetId); return next; });
-            return <div className={`friend-editor-row${batchSelected.has(targetId) ? " selected" : ""}`} key={targetId} role="button" tabIndex={0} aria-selected={batchSelected.has(targetId)} onClick={toggle} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}>
+            const selected = batchSelected.has(targetId);
+            return <div className={`friend-editor-row${selected ? " selected" : ""}${friend.enabled ? "" : " disabled-target"}`} key={targetId} role="button" tabIndex={0} aria-selected={selected} onClick={toggle} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}>
               <input className="row-check" aria-label={`选择 ${friend.display_name}`} type="checkbox" checked={batchSelected.has(targetId)} onClick={(event) => event.stopPropagation()} onChange={(event) => { const next = new Set(batchSelected); if (event.target.checked) next.add(targetId); else next.delete(targetId); setBatchSelected(next); }} />
               <FriendAvatar name={friend.display_name} url={friend.avatar_url} />
-              <span className="row-number">{index + 1}</span>
               <div className="friend-editor-copy">
                 <strong>{friend.display_name}</strong>
-                <small>{`${friend.enabled ? "已启用" : "已停用"} · ${todayLabel(friend.today_status)}${friend.last_success_date ? ` · 最近成功 ${friend.last_success_date}` : ""}`}</small>
+                <small><span className={friend.enabled ? "target-status" : "target-status paused"}>{friend.enabled ? "已启用" : "已停用"}</span>{todayLabel(friend.today_status)}{friend.last_success_date ? ` · 最近成功：${friend.last_success_date}` : ""}</small>
               </div>
+              {selected ? <span className="selection-indicator" aria-label="已选择"><Check size={13} /></span> : null}
               <button className="icon-button danger" aria-label={`删除 ${friend.display_name}`} onClick={(event) => { event.stopPropagation(); void api.friendBatch([targetId], "delete").then(load); }}><Trash2 size={17} /></button>
             </div>;
           })}

@@ -116,8 +116,11 @@ test("selects target cards by click and keyboard without letting nested controls
 
   expect(card).not.toBeNull();
   expect(checkbox).not.toBeChecked();
+  expect(screen.queryByLabelText("已选择")).not.toBeInTheDocument();
   fireEvent.click(card!);
   expect(checkbox).toBeChecked();
+  expect(screen.getByLabelText("已选择")).toBeInTheDocument();
+  expect(screen.getByText("已选择 1 个目标")).toBeInTheDocument();
   fireEvent.keyDown(card!, { key: "Enter" });
   expect(checkbox).not.toBeChecked();
   fireEvent.keyDown(card!, { key: " " });
