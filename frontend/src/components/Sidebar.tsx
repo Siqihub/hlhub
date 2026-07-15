@@ -9,6 +9,7 @@ import {
   Settings,
   Users
 } from "lucide-react";
+import type { AccountProfile } from "../types";
 
 export type ViewName =
   | "dashboard"
@@ -33,17 +34,27 @@ const navigation = [
 
 export function Sidebar({
   active,
-  onChange
+  onChange,
+  account,
+  onRefreshAccount
 }: {
   active: ViewName;
   onChange: (view: ViewName) => void;
+  account: AccountProfile | null;
+  onRefreshAccount: () => void;
 }) {
+  const verified = account?.profile_status === "verified" && account.is_self;
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <span className="brand-mark"><Flame size={24} fill="currentColor" /></span>
-        <span>AutoDy 续火助手</span>
+      <div className="account-identity">
+        {verified && account.avatar_url ? <img className="account-avatar" src={account.avatar_url} alt="当前账号头像" /> : <span className="brand-mark"><Flame size={24} fill="currentColor" /></span>}
+        <div className="account-copy">
+          <strong>{verified ? account.display_name : "未识别当前账号"}</strong>
+          <small>{verified ? (account.logged_in ? "当前抖音账号" : "上次登录账号") : "AutoDy 续火助手"}</small>
+          {verified ? <em>AutoDy 续火助手</em> : null}
+        </div>
       </div>
+      <button className="account-refresh" onClick={onRefreshAccount} disabled={Boolean(account?.refresh_running)}>刷新当前账号资料</button>
       <nav aria-label="主导航">
         {navigation.map(([value, label, Icon]) => (
           <button

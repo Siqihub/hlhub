@@ -9,14 +9,18 @@ import { MessagesPage } from "./pages/MessagesPage";
 import { MessagePacksPage } from "./pages/MessagePacksPage";
 import { SchedulerPage } from "./pages/SchedulerPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import type { DashboardStatus } from "./types";
+import type { AccountProfile, DashboardStatus } from "./types";
 
 export default function App() {
   const [view, setView] = useState<ViewName>("dashboard");
   const [status, setStatus] = useState<DashboardStatus | null>(null);
+  const [account, setAccount] = useState<AccountProfile | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState("");
-  const load = useCallback(() => void api.status().then(setStatus), []);
+  const load = useCallback(() => {
+    void api.status().then(setStatus);
+    void api.accountProfile().then(setAccount).catch(() => setAccount(null));
+  }, []);
   useEffect(() => {
     load();
     const refresh = () => { if (!document.hidden) load(); };
@@ -50,11 +54,22 @@ export default function App() {
       setBusy(null);
     }
   };
+  const refreshAccount = async () => {
+    try {
+      const result = await api.refreshAccountProfile();
+      setAccount(result);
+      if (result.job) await api.waitForAction(result.job.id);
+      setAccount(await api.accountProfile());
+      notify("当前账号资料已刷新");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "当前账号资料刷新失败");
+    }
+  };
 
   if (!status) return <div className="app-loading">正在连接 AutoDy 本地服务…</div>;
   return (
     <div className="app-shell">
-      <Sidebar active={view} onChange={setView} />
+      <Sidebar active={view} onChange={setView} account={account} onRefreshAccount={() => void refreshAccount()} />
       <main className="workspace">
         {view === "dashboard" && <DashboardPage status={status} busy={busy} onAction={action} onNavigate={setView} />}
         {view === "friends" && <FriendsPage notify={notify} />}

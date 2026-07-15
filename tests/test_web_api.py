@@ -178,6 +178,34 @@ def test_avatar_route_uses_cached_file_or_local_fallback_and_rejects_unsafe_ids(
     assert unsafe.status_code == 404
 
 
+def test_account_profile_api_uses_local_avatar_and_never_exposes_private_identifiers(tmp_path: Path):
+    config = make_project(tmp_path)
+    account_dir = tmp_path / "data" / "account-avatar"
+    account_dir.mkdir()
+    (account_dir / "profile.png").write_bytes(b"profile-image")
+    (tmp_path / "data" / "account-profile.json").write_text(
+        json.dumps({
+            "account_profile_id": "account-digest", "account_id_digest": "private-raw-id",
+            "display_name": "本人", "avatar_cache_key": "profile", "avatar_version": "version",
+            "is_self": True, "verification_source": "bootstrap_current_login_user",
+            "profile_status": "verified", "verified_at": "2026-07-15T08:00:00",
+            "last_updated_at": "2026-07-15T08:00:00", "switched": False,
+            "avatar_source": "https://remote-image",
+        }, ensure_ascii=False), encoding="utf-8",
+    )
+    client = TestClient(create_app(config))
+
+    payload = client.get("/api/account-profile").json()
+    avatar = client.get("/api/account-profile/avatar")
+
+    assert payload["display_name"] == "本人"
+    assert payload["avatar_url"] == "/api/account-profile/avatar?v=version"
+    assert payload["is_self"] is True
+    assert "private-raw-id" not in json.dumps(payload, ensure_ascii=False)
+    assert "remote-image" not in json.dumps(payload, ensure_ascii=False)
+    assert avatar.content == b"profile-image"
+
+
 def test_diagnostic_export_explicitly_excludes_avatar_cache(tmp_path: Path):
     client = TestClient(create_app(make_project(tmp_path)))
 

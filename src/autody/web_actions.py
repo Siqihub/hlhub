@@ -16,6 +16,7 @@ BROWSER_ACTIONS = {
     "refresh-friend-avatars",
     "startup-recovery",
     "repair-playwright",
+    "refresh-account-profile",
 }
 
 
@@ -91,6 +92,7 @@ class ActionManager:
             "scan-friends",
             "refresh-friend-avatars",
             "repair-playwright",
+            "refresh-account-profile",
         }:
             return [
                 sys.executable,

@@ -277,6 +277,10 @@ def login(
         context.set_default_timeout(10_000)
         try:
             page = context.pages[0] if context.pages else context.new_page()
+            # Register account observers before navigation/QR completion.  The
+            # listener is read-only and does not alter chat behavior.
+            from autody.account_profile import attach_account_observer
+            attach_account_observer(page)
             page.goto(CHAT_URL)
             page.locator(DOUYIN_SELECTORS.login_marker).wait_for(timeout=timeout_ms)
             if on_ready is not None:

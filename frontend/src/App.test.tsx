@@ -5,6 +5,12 @@ import App from "./App";
 const apiMocks = vi.hoisted(() => ({
   action: vi.fn(),
   waitForAction: vi.fn(),
+  accountProfile: vi.fn().mockResolvedValue({
+    display_name: "本人", avatar_url: "/api/account-profile/avatar?v=test", avatar_version: "test",
+    is_self: true, profile_status: "verified", verification_source: "bootstrap_current_login_user",
+    logged_in: true, cached: true, last_updated_at: "2026-07-15T08:00:00", refresh_running: false
+  }),
+  refreshAccountProfile: vi.fn(),
   checkRecovery: vi.fn().mockResolvedValue({ due: false, started: false }),
   messagePacks: vi.fn().mockResolvedValue({
     packs: [{ id: "daily", name: "日常问候", description: "自然短问候", version: "1.0.0", count: 50, category: "daily" }],
@@ -33,6 +39,8 @@ vi.mock("./api", () => ({
     }),
     action: apiMocks.action,
     waitForAction: apiMocks.waitForAction,
+    accountProfile: apiMocks.accountProfile,
+    refreshAccountProfile: apiMocks.refreshAccountProfile,
     checkRecovery: apiMocks.checkRecovery,
     messagePacks: apiMocks.messagePacks
   }
@@ -41,6 +49,8 @@ vi.mock("./api", () => ({
 test("renders the primary dashboard status", async () => {
   render(<App />);
   expect(await screen.findByText("运行总览")).toBeInTheDocument();
+  expect(screen.getByText("当前抖音账号")).toBeInTheDocument();
+  expect(screen.getByAltText("当前账号头像")).toHaveAttribute("src", "/api/account-profile/avatar?v=test");
   expect(screen.getByText("已完成")).toBeInTheDocument();
   expect(screen.getAllByText("9/9")).toHaveLength(2);
   expect(screen.getByText("检查登录")).toBeInTheDocument();

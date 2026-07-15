@@ -28,6 +28,7 @@ from autody.config import (
     load_config,
     save_config,
 )
+from autody.account_profile import public_profile_payload
 from autody.friend_discovery import is_discovery_stale, load_discovered_friends
 from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, dashboard_statistics
 from autody.log_center import archive_historical_logs, archive_logs, log_summary, query_logs
@@ -495,6 +496,37 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             "issues": issues,
             "statistics": statistics,
         }
+
+    @app.get("/api/account-profile")
+    def account_profile():
+        config = load_config(config_path)
+        return public_profile_payload(
+            root,
+            logged_in=_login_status(config.state_file.parent / "health.json", config.state_file.parent / "logs") == "success",
+        )
+
+    @app.post("/api/account-profile/refresh", status_code=202)
+    def refresh_account_profile():
+        config = load_config(config_path)
+        try:
+            job = run_action("refresh-account-profile")
+        except ActionAlreadyRunning as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            **public_profile_payload(
+                root,
+                logged_in=_login_status(config.state_file.parent / "health.json", config.state_file.parent / "logs") == "success",
+                refresh_running=job.get("status") == "running",
+            ),
+            "job": job,
+        }
+
+    @app.get("/api/account-profile/avatar")
+    def account_profile_avatar():
+        _profile, avatar = (root / "data" / "account-profile.json", root / "data" / "account-avatar" / "profile.png")
+        if avatar.is_file():
+            return FileResponse(avatar, media_type="image/png", headers={"Cache-Control": "private, max-age=86400, immutable"})
+        return Response(_FALLBACK_AVATAR, media_type="image/svg+xml", headers={"Cache-Control": "private, max-age=300"})
 
     @app.get("/api/config")
     def get_config():
@@ -1105,6 +1137,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             "scan-friends",
             "refresh-friend-avatars",
             "repair-playwright",
+            "refresh-account-profile",
             "install-scheduler",
             "remove-scheduler",
         }:

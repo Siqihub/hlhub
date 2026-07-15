@@ -21,6 +21,7 @@ from autody.chat import (
     login as browser_login,
     open_chat,
 )
+from autody.account_profile import AccountProfileUnavailable, resolve_account_profile
 from autody.config import AppConfig, load_config, save_config
 from autody.friend_discovery import (
     ScanProgress,
@@ -202,6 +203,13 @@ def login(config: Path = typer.Option(Path("config.yaml"), "--config")):
             def scan_after_login(page) -> None:
                 nonlocal scan_message
                 try:
+                    profile = resolve_account_profile(page, _project_root(config))
+                    logging.info("当前账号资料已验证并刷新，账号切换=%s", profile.switched)
+                except AccountProfileUnavailable as exc:
+                    logging.warning("当前账号资料未验证：%s", exc)
+                except Exception:
+                    logging.exception("当前账号资料刷新失败，但登录仍然有效。")
+                try:
                     result = discover_friends(
                         loaded,
                         page,
@@ -232,6 +240,28 @@ def login(config: Path = typer.Option(Path("config.yaml"), "--config")):
             _write_health(loaded, "success")
             typer.echo("登录状态已保存。")
             typer.echo(scan_message)
+    except TaskAlreadyRunning:
+        _busy()
+
+
+@app.command("refresh-account-profile")
+def refresh_account_profile(config: Path = typer.Option(Path("config.yaml"), "--config")):
+    """Read and cache the verified current account without opening a profile page."""
+    loaded = load_config(config)
+    try:
+        with SingleInstanceLock(loaded.lock_file):
+            configure_runtime(_project_root(config))
+            setup_logging(loaded)
+            with open_chat(
+                loaded.profile_dir,
+                timeout_ms=loaded.page_load_timeout_ms,
+                headless=loaded.headless,
+                home=_project_root(config),
+            ) as page:
+                profile = resolve_account_profile(page, _project_root(config))
+            typer.echo("检测到登录账号已切换，账号资料已更新。" if profile.switched else "当前账号资料已刷新。")
+    except AccountProfileUnavailable as exc:
+        typer.echo(f"当前账号资料未验证：{exc}")
     except TaskAlreadyRunning:
         _busy()
 

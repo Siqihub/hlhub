@@ -1,5 +1,6 @@
 import type {
   AppConfig,
+  AccountProfile,
   BackupPreview,
   ConfiguredFriend,
   DashboardStatus,
@@ -33,6 +34,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   status: () => request<DashboardStatus>("/api/status"),
+  accountProfile: () => request<AccountProfile>("/api/account-profile"),
+  refreshAccountProfile: () => request<AccountProfile & { job?: ActionJob }>("/api/account-profile/refresh", { method: "POST" }),
   config: () => request<AppConfig>("/api/config"),
   saveConfig: (config: AppConfig) =>
     request<AppConfig>("/api/config", { method: "PUT", body: JSON.stringify(config) }),

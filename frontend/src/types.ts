@@ -94,6 +94,19 @@ export interface DashboardIssue {
   action_label: string;
 }
 
+export interface AccountProfile {
+  display_name: string | null;
+  avatar_url: string | null;
+  avatar_version: string | null;
+  is_self: boolean;
+  profile_status: "verified" | "unverified";
+  verification_source: string | null;
+  logged_in: boolean;
+  cached: boolean;
+  last_updated_at: string | null;
+  refresh_running: boolean;
+}
+
 export type MessageSuffixStyle = "dash" | "bracket" | "newline" | "none";
 
 export interface AppConfig {
