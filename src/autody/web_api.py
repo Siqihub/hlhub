@@ -31,7 +31,7 @@ from autody.config import (
 from autody.account_profile import public_profile_payload
 from autody.friend_discovery import is_discovery_stale, load_discovered_friends
 from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, dashboard_statistics
-from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_storage_summary, log_summary, query_logs
+from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_storage_summary, log_summary, query_logs, record_cleanup_result
 from autody.message_packs import ImportMode, MessagePackError, MessagePackService
 from autody.messages import read_messages
 from autody.recovery import recovery_due
@@ -74,6 +74,9 @@ class ConfigUpdate(BaseModel):
     message_selection: str = Field(default="one_for_all", pattern=r"^(one_for_all|per_friend)$")
     completion_notifications_enabled: bool = True
     log_retention_days: int = Field(default=30, ge=7, le=3650)
+    log_cleanup_enabled: bool = True
+    active_log_retention_days: int = Field(default=14, ge=3, le=3650)
+    archive_log_retention_days: int = Field(default=90, ge=3, le=3650)
     mask_log_friend_names: bool = True
 
 
@@ -198,6 +201,9 @@ def _config_payload(config: AppConfig) -> dict:
         "message_selection": config.message_selection,
         "completion_notifications_enabled": config.completion_notifications_enabled,
         "log_retention_days": config.log_retention_days,
+        "log_cleanup_enabled": config.log_cleanup_enabled,
+        "active_log_retention_days": config.active_log_retention_days,
+        "archive_log_retention_days": config.archive_log_retention_days,
         "mask_log_friend_names": config.mask_log_friend_names,
         "friend_scan_lock_timeout_ms": config.friend_scan_lock_timeout_ms,
         "friend_scan_overall_timeout_ms": config.friend_scan_overall_timeout_ms,
@@ -277,6 +283,9 @@ def _portable_config(config_path: Path, config: AppConfig) -> bytes:
         "message_selection": config.message_selection,
         "completion_notifications_enabled": config.completion_notifications_enabled,
         "log_retention_days": config.log_retention_days,
+        "log_cleanup_enabled": config.log_cleanup_enabled,
+        "active_log_retention_days": config.active_log_retention_days,
+        "archive_log_retention_days": config.archive_log_retention_days,
         "mask_log_friend_names": config.mask_log_friend_names,
     }
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False).encode("utf-8")
@@ -291,7 +300,9 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     app = FastAPI(title="AutoDy", docs_url=None, redoc_url=None)
     # Log maintenance is deliberately best-effort and limited by its local date
     # marker; it must never prevent the dashboard from starting.
-    automatic_cleanup_once_daily(root / "data" / "logs")
+    initial_config = load_config(config_path)
+    if initial_config.log_cleanup_enabled:
+        automatic_cleanup_once_daily(initial_config.state_file.parent / "logs", active_days=initial_config.active_log_retention_days, archive_days=initial_config.archive_log_retention_days)
     task_cache: dict[str, object] = {"expires": 0.0, "rows": []}
     recovery_attempted: set[str] = set()
     discovery_refresh_lock = threading.Lock()
@@ -537,6 +548,8 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
 
     @app.put("/api/config")
     def update_config(payload: ConfigUpdate):
+        if payload.archive_log_retention_days < payload.active_log_retention_days:
+            raise HTTPException(422, "归档日志保留天数不能小于活跃日志保留天数")
         config = load_config(config_path)
         existing: dict[str, list[Target]] = defaultdict(list)
         for target in config.targets:
@@ -1019,17 +1032,30 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     @app.get("/api/logs/storage-summary")
     def log_storage_summary_endpoint():
         config = load_config(config_path)
-        return {**log_storage_summary(config.state_file.parent / "logs"), "active_retention_days": 14, "archive_retention_days": 90}
+        return {
+            **log_storage_summary(config.state_file.parent / "logs"),
+            "cleanup_enabled": config.log_cleanup_enabled,
+            "active_retention_days": config.active_log_retention_days,
+            "archive_retention_days": config.archive_log_retention_days,
+        }
 
     @app.post("/api/logs/cleanup-preview")
     def log_cleanup_preview():
         config = load_config(config_path)
-        return cleanup_logs(config.state_file.parent / "logs", apply=False)
+        return cleanup_logs(config.state_file.parent / "logs", active_days=config.active_log_retention_days, archive_days=config.archive_log_retention_days, apply=False)
 
     @app.post("/api/logs/cleanup")
-    def log_cleanup():
+    def log_cleanup(payload: dict):
+        if payload.get("confirmed") is not True:
+            raise HTTPException(422, "需要确认后才能整理日志")
         config = load_config(config_path)
-        return cleanup_logs(config.state_file.parent / "logs")
+        log_dir = config.state_file.parent / "logs"
+        result = cleanup_logs(log_dir, active_days=config.active_log_retention_days, archive_days=config.archive_log_retention_days)
+        try:
+            record_cleanup_result(log_dir, result)
+        except OSError:
+            pass
+        return result
 
     @app.post("/api/logs/archive")
     def archive_application_logs(before: date):

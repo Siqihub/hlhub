@@ -284,21 +284,37 @@ def log_storage_summary(log_dir: Path) -> dict:
     archived = [path for path in archive.iterdir() if path.is_file() and _named_log_date(path)] if archive.exists() else []
     files = [*active, *archived]
     dates = [item for item in (_named_log_date(path) for path in files) if item]
-    return {"active_files": len(active), "archived_files": len(archived), "total_bytes": sum(path.stat().st_size for path in files), "oldest_date": min(dates).isoformat() if dates else None}
+    state = log_dir / "cleanup-state.json"
+    try:
+        cleanup_state = json.loads(state.read_text(encoding="utf-8")) if state.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        cleanup_state = {}
+    active_bytes = sum(path.stat().st_size for path in active)
+    archived_bytes = sum(path.stat().st_size for path in archived)
+    return {
+        "active_files": len(active), "active_bytes": active_bytes,
+        "archived_files": len(archived), "archived_bytes": archived_bytes,
+        "total_bytes": active_bytes + archived_bytes,
+        "oldest_date": min(dates).isoformat() if dates else None,
+        "last_cleanup_at": cleanup_state.get("cleaned_at"),
+        "last_cleanup_result": cleanup_state.get("last_result"),
+        "next_cleanup_date": (date.today() + timedelta(days=1)).isoformat(),
+    }
 
 
 def cleanup_logs(log_dir: Path, *, active_days: int = 14, archive_days: int = 90, today: date | None = None, apply: bool = True) -> dict:
     """Archive dated logs safely; delete only aged recognized archive entries."""
     today = today or date.today()
     archive = log_dir / "archive"
-    archive.mkdir(parents=True, exist_ok=True)
     keep_from = today - timedelta(days=max(3, active_days) - 1)
     delete_before = today - timedelta(days=archive_days)
     archive_candidates = [path for path in _log_files(log_dir) if (_named_log_date(path) or today) < keep_from]
-    delete_candidates = [path for path in archive.iterdir() if path.is_file() and not path.is_symlink() and (_named_log_date(path) and _named_log_date(path) < delete_before)]
-    result = {"to_archive": len(archive_candidates), "to_delete": len(delete_candidates), "archived": 0, "deleted": 0, "skipped": 0, "bytes": sum(path.stat().st_size for path in [*archive_candidates, *delete_candidates])}
+    delete_candidates = [path for path in archive.iterdir() if path.is_file() and not path.is_symlink() and (_named_log_date(path) and _named_log_date(path) < delete_before)] if archive.exists() else []
+    result = {"to_archive": len(archive_candidates), "to_delete": len(delete_candidates), "archived": 0, "deleted": 0, "skipped": 0, "bytes": sum(path.stat().st_size for path in delete_candidates)}
     if not apply:
         return result
+    if archive_candidates:
+        archive.mkdir(parents=True, exist_ok=True)
     for path in archive_candidates:
         try:
             destination = archive / path.name
@@ -313,17 +329,27 @@ def cleanup_logs(log_dir: Path, *, active_days: int = 14, archive_days: int = 90
     return result
 
 
-def automatic_cleanup_once_daily(log_dir: Path, *, today: date | None = None) -> dict | None:
+def record_cleanup_result(log_dir: Path, result: dict, *, today: date | None = None) -> None:
+    """Persist a compact cleanup status record without touching any log file."""
+    today = today or date.today()
+    state = log_dir / "cleanup-state.json"
+    temporary = state.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps({"date": today.isoformat(), "cleaned_at": datetime.now().isoformat(timespec="seconds"), "last_result": result}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(temporary, state)
+
+
+def automatic_cleanup_once_daily(log_dir: Path, *, active_days: int = 14, archive_days: int = 90, today: date | None = None) -> dict | None:
     """Best-effort dashboard housekeeping; errors never block normal startup."""
     today = today or date.today()
     state = log_dir / "cleanup-state.json"
     try:
         if state.is_file() and json.loads(state.read_text(encoding="utf-8")).get("date") == today.isoformat():
             return None
-        result = cleanup_logs(log_dir, today=today)
-        temporary = state.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"date": today.isoformat(), "last_result": result}, ensure_ascii=False), encoding="utf-8")
-        os.replace(temporary, state)
+        result = cleanup_logs(log_dir, active_days=active_days, archive_days=archive_days, today=today)
+        record_cleanup_result(log_dir, result, today=today)
         return result
-    except OSError:
+    except (OSError, ValueError, json.JSONDecodeError):
         return None

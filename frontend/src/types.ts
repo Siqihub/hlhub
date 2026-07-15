@@ -136,6 +136,9 @@ export interface AppConfig {
   message_selection: "one_for_all" | "per_friend";
   completion_notifications_enabled: boolean;
   log_retention_days: number;
+  log_cleanup_enabled: boolean;
+  active_log_retention_days: number;
+  archive_log_retention_days: number;
   mask_log_friend_names: boolean;
 }
 

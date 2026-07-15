@@ -112,6 +112,12 @@ td { height: 43px; padding: 0 14px; border-top: 1px solid #edf1f5; color: #26344
 .backup-options input { width: 16px; margin: 0; }
 .schedule-apply-actions { margin: 14px 0; }
 .log-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.log-storage { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; color: #56657a; font-size: 13px; }
+.log-storage strong { color: #24334a; }
+.cleanup-dialog { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(25, 38, 58, .32); }
+.cleanup-dialog .panel { width: min(540px, 100%); padding: 24px; }
+.cleanup-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+.cleanup-dialog p { color: #5f6f83; line-height: 1.65; }
 .row-number, .message-index { color: #8c98aa; font: 12px ui-monospace, monospace; }
 input, textarea, select { width: 100%; border: 1px solid #dce3ec; border-radius: 7px; padding: 10px 12px; color: #18263d; background: #fff; outline: none; }
 input:focus, textarea:focus, select:focus { border-color: #5797ef; box-shadow: 0 0 0 3px rgba(30,112,235,.1); }

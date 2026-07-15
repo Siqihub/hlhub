@@ -18,6 +18,8 @@ export function SettingsPage({ notify }: { notify: (message: string) => void }) 
   if (!config) return <div className="loading">加载设置…</div>;
   const save = async () => {
     if (config.min_delay_seconds > config.max_delay_seconds) return notify("最小间隔不能大于最大间隔");
+    if (config.active_log_retention_days < 3) return notify("活跃日志保留天数不能少于 3 天");
+    if (config.archive_log_retention_days < config.active_log_retention_days) return notify("归档日志保留天数不能小于活跃日志保留天数");
     try { setConfig(await api.saveConfig(config)); notify("运行设置已保存"); }
     catch (error) { notify(error instanceof Error ? error.message : "设置保存失败"); }
   };
@@ -36,6 +38,9 @@ export function SettingsPage({ notify }: { notify: (message: string) => void }) 
         <label><span>文案选择<small>所有好友共用当天文案，或为每位好友独立选取</small></span><select value={config.message_selection ?? "one_for_all"} onChange={(event) => setConfig({ ...config, message_selection: event.target.value as AppConfig["message_selection"] })}><option value="one_for_all">当天同一条文案</option><option value="per_friend">每位好友独立选择</option></select></label>
         <label><span>Windows 完成通知<small>任务完成或失败时显示本地通知</small></span><input className="toggle" type="checkbox" checked={config.completion_notifications_enabled ?? true} onChange={(event) => setConfig({ ...config, completion_notifications_enabled: event.target.checked })} /></label>
         <label><span>日志保留天数<small>只影响后续管理，不会删除现有证据</small></span><input type="number" min={7} max={3650} value={config.log_retention_days ?? 30} onChange={(event) => setConfig({ ...config, log_retention_days: Number(event.target.value) })} /></label>
+        <label><span>自动整理日志<small>每天首次打开管理台时在后台检查一次</small></span><input className="toggle" type="checkbox" checked={config.log_cleanup_enabled ?? true} onChange={(event) => setConfig({ ...config, log_cleanup_enabled: event.target.checked })} /></label>
+        <label><span>活跃日志保留天数<small>最少 3 天；保存设置不会立刻删除文件</small></span><input aria-label="活跃日志保留天数" type="number" min={3} max={3650} value={config.active_log_retention_days ?? 14} onChange={(event) => setConfig({ ...config, active_log_retention_days: Number(event.target.value) })} /></label>
+        <label><span>归档日志保留天数<small>不能少于活跃日志保留天数</small></span><input aria-label="归档日志保留天数" type="number" min={3} max={3650} value={config.archive_log_retention_days ?? 90} onChange={(event) => setConfig({ ...config, archive_log_retention_days: Number(event.target.value) })} /></label>
         <label><span>在管理台日志中脱敏好友名称<small>默认开启，不修改本地原始日志</small></span><input className="toggle" type="checkbox" checked={config.mask_log_friend_names} onChange={(event) => setConfig({ ...config, mask_log_friend_names: event.target.checked })} /></label>
         <label><span>启用消息后缀<small>发送时动态添加，不修改文案库原文</small></span><input className="toggle" type="checkbox" checked={config.message_suffix.enabled} onChange={(event) => setConfig({ ...config, message_suffix: { ...config.message_suffix, enabled: event.target.checked } })} /></label>
         <label><span>后缀文字<small>默认：gpt小助手</small></span><input aria-label="后缀文字" value={config.message_suffix.text} onChange={(event) => setConfig({ ...config, message_suffix: { ...config.message_suffix, text: event.target.value } })} /></label>

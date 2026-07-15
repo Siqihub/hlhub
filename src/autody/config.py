@@ -57,6 +57,9 @@ class AppConfig(BaseModel):
     message_selection: str = Field(default="one_for_all", pattern=r"^(one_for_all|per_friend)$")
     completion_notifications_enabled: bool = True
     log_retention_days: int = Field(default=30, ge=7, le=3650)
+    log_cleanup_enabled: bool = True
+    active_log_retention_days: int = Field(default=14, ge=3, le=3650)
+    archive_log_retention_days: int = Field(default=90, ge=3, le=3650)
     mask_log_friend_names: bool = True
     friend_scan_lock_timeout_ms: int = Field(default=5_000, ge=1_000, le=30_000)
     friend_scan_overall_timeout_ms: int = Field(default=90_000, ge=10_000, le=300_000)
@@ -80,6 +83,8 @@ class AppConfig(BaseModel):
             raise ValueError("recovery deadline must not be earlier than daily send time")
         if self.min_delay_seconds > self.max_delay_seconds:
             raise ValueError("minimum delay must not exceed maximum delay")
+        if self.archive_log_retention_days < self.active_log_retention_days:
+            raise ValueError("archive log retention must not be shorter than active retention")
         return self
 
 
@@ -132,6 +137,9 @@ def save_config(path: Path, config: AppConfig) -> None:
         "message_selection": config.message_selection,
         "completion_notifications_enabled": config.completion_notifications_enabled,
         "log_retention_days": config.log_retention_days,
+        "log_cleanup_enabled": config.log_cleanup_enabled,
+        "active_log_retention_days": config.active_log_retention_days,
+        "archive_log_retention_days": config.archive_log_retention_days,
         "mask_log_friend_names": config.mask_log_friend_names,
         "friend_scan_lock_timeout_ms": config.friend_scan_lock_timeout_ms,
         "friend_scan_overall_timeout_ms": config.friend_scan_overall_timeout_ms,

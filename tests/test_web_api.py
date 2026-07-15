@@ -132,6 +132,39 @@ def test_config_and_messages_can_be_updated(tmp_path: Path):
     assert (tmp_path / "messages.txt").read_text(encoding="utf-8") == "甲\n乙\n"
 
 
+def test_log_retention_config_validation_and_cleanup_api(tmp_path: Path):
+    config = make_project(tmp_path)
+    client = TestClient(create_app(config))
+    logs = tmp_path / "data" / "logs"
+    old = logs / "autody-2026-06-01.log"; old.write_text("old", encoding="utf-8")
+    protected = tmp_path / "data" / "history" / "task-runs.jsonl"
+    protected.parent.mkdir(parents=True); protected.write_text("protected", encoding="utf-8")
+
+    payload = client.get("/api/config").json()
+    payload.update({"active_log_retention_days": 14, "archive_log_retention_days": 90, "log_cleanup_enabled": True})
+    assert client.put("/api/config", json=payload).status_code == 200
+    payload["active_log_retention_days"] = 2
+    assert client.put("/api/config", json=payload).status_code == 422
+    payload["active_log_retention_days"] = 14
+    payload["archive_log_retention_days"] = 3
+    assert client.put("/api/config", json=payload).status_code == 422
+    assert client.get("/api/logs/cleanup").status_code == 404
+
+    summary = client.get("/api/logs/storage-summary")
+    preview = client.post("/api/logs/cleanup-preview")
+    rejected = client.post("/api/logs/cleanup", json={})
+
+    assert summary.status_code == 200
+    assert summary.json()["active_files"] >= 1
+    assert preview.json()["to_archive"] == 1
+    assert old.exists()
+    assert rejected.status_code == 422
+    applied = client.post("/api/logs/cleanup", json={"confirmed": True})
+    assert applied.json()["archived"] == 1
+    assert client.get("/api/logs/storage-summary").json()["last_cleanup_result"]["archived"] == 1
+    assert protected.read_text(encoding="utf-8") == "protected"
+
+
 def test_logs_and_backup_exclude_browser_profile(tmp_path: Path):
     config = make_project(tmp_path)
     profile = tmp_path / "data" / "browser-profile"

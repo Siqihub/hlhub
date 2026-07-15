@@ -2,7 +2,7 @@ from datetime import date
 from pathlib import Path
 
 from autody.config import AppConfig, Target
-from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_summary, query_logs
+from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_storage_summary, log_summary, query_logs
 
 
 def test_logs_default_to_three_days_filter_and_mask_names(tmp_path: Path):
@@ -171,3 +171,38 @@ def test_automatic_cleanup_runs_only_once_per_day(tmp_path: Path):
 
     assert automatic_cleanup_once_daily(log_dir, today=date(2026, 7, 15)) is not None
     assert automatic_cleanup_once_daily(log_dir, today=date(2026, 7, 15)) is None
+
+
+def test_cleanup_failure_does_not_block_housekeeping(tmp_path: Path, monkeypatch):
+    log_dir = tmp_path / "logs"; log_dir.mkdir()
+    monkeypatch.setattr("autody.log_center.cleanup_logs", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("locked")))
+
+    assert automatic_cleanup_once_daily(log_dir, today=date(2026, 7, 15)) is None
+
+
+def test_storage_summary_and_preview_do_not_change_files(tmp_path: Path):
+    log_dir = tmp_path / "logs"; log_dir.mkdir()
+    old = log_dir / "autody-2026-06-01.log"; old.write_text("old", encoding="utf-8")
+
+    preview = cleanup_logs(log_dir, today=date(2026, 7, 15), apply=False)
+    summary = log_storage_summary(log_dir)
+
+    assert preview["to_archive"] == 1
+    assert old.exists()
+    assert not (log_dir / "archive").exists()
+    assert summary["active_files"] == 1
+    assert summary["active_bytes"] == len("old")
+    assert summary["archived_files"] == 0
+    assert summary["next_cleanup_date"]
+
+
+def test_cleanup_keeps_protected_project_files_untouched(tmp_path: Path):
+    log_dir = tmp_path / "data" / "logs"; log_dir.mkdir(parents=True)
+    (log_dir / "autody-2026-06-01.log").write_text("old", encoding="utf-8")
+    protected = [tmp_path / "data" / "history" / "task-runs.jsonl", tmp_path / "config.yaml", tmp_path / "messages.txt"]
+    for path in protected:
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_text("protected", encoding="utf-8")
+
+    cleanup_logs(log_dir, today=date(2026, 7, 15))
+
+    assert all(path.read_text(encoding="utf-8") == "protected" for path in protected)
