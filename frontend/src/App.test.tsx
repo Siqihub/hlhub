@@ -81,3 +81,14 @@ test("opens the online message library from navigation", async () => {
   expect(await screen.findByRole("heading", { name: "在线文案库" })).toBeInTheDocument();
   expect(screen.getByText("日常问候")).toBeInTheDocument();
 });
+
+test("shows a localized account-profile route error instead of FastAPI detail", async () => {
+  apiMocks.refreshAccountProfile.mockRejectedValueOnce(new Error('{"detail":"Not Found"}'));
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "刷新当前账号资料" }));
+
+  expect(await screen.findByText("当前账号资料接口不可用，请重启 AutoDy 管理台。"))
+    .toBeInTheDocument();
+  expect(screen.queryByText(/detail.*Not Found/)).not.toBeInTheDocument();
+});

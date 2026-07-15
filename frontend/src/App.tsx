@@ -11,6 +11,15 @@ import { SchedulerPage } from "./pages/SchedulerPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { AccountProfile, DashboardStatus } from "./types";
 
+function accountRefreshErrorMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message : "";
+  if (/not found|接口不存在|\b404\b/i.test(detail)) return "当前账号资料接口不可用，请重启 AutoDy 管理台。";
+  if (/\b401\b|\b403\b|登录/i.test(detail)) return "已登录，但暂时无法读取当前账号资料。";
+  if (/\b409\b|正在运行|任务忙/i.test(detail)) return "浏览器正在执行其他任务，请稍后再试。";
+  if (/\b500\b|提取|读取/i.test(detail)) return "当前账号资料读取失败，请稍后重试。";
+  return "当前账号资料刷新失败，请检查 AutoDy 管理台连接。";
+}
+
 export default function App() {
   const [view, setView] = useState<ViewName>("dashboard");
   const [status, setStatus] = useState<DashboardStatus | null>(null);
@@ -62,7 +71,7 @@ export default function App() {
       setAccount(await api.accountProfile());
       notify("当前账号资料已刷新");
     } catch (error) {
-      notify(error instanceof Error ? error.message : "当前账号资料刷新失败");
+      notify(accountRefreshErrorMessage(error));
     }
   };
 

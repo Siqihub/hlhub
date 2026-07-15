@@ -206,6 +206,14 @@ def test_account_profile_api_uses_local_avatar_and_never_exposes_private_identif
     assert avatar.content == b"profile-image"
 
 
+def test_openapi_registers_all_account_profile_routes(tmp_path: Path):
+    paths = TestClient(create_app(make_project(tmp_path))).get("/openapi.json").json()["paths"]
+
+    assert "get" in paths["/api/account-profile"]
+    assert "post" in paths["/api/account-profile/refresh"]
+    assert "get" in paths["/api/account-profile/avatar"]
+
+
 def test_diagnostic_export_explicitly_excludes_avatar_cache(tmp_path: Path):
     client = TestClient(create_app(make_project(tmp_path)))
 
