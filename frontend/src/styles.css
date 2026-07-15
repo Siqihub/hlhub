@@ -32,6 +32,9 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .action-button:hover { border-color: #aebdd1; background: #f9fbfd; }
 .action-button.primary { color: white; border-color: #1769e8; background: #1769e8; box-shadow: 0 8px 20px rgba(23,105,232,.18); }
 .action-button:disabled { opacity: .55; cursor: not-allowed; }
+.friend-editor-row { cursor: pointer; }
+.friend-editor-row.selected { border-color: #4c91ef; background: #edf5ff; box-shadow: inset 0 0 0 1px rgba(76,145,239,.18); }
+.friend-editor-row:focus-visible { outline: 3px solid rgba(76,145,239,.35); outline-offset: 2px; }
 
 .status-rail { min-height: 115px; display: grid; grid-template-columns: repeat(3, 1fr); background: white; border: 1px solid #e0e6ee; border-radius: 10px; margin-bottom: 16px; }
 .status-item { display: flex; align-items: center; gap: 18px; padding: 22px 32px; position: relative; }

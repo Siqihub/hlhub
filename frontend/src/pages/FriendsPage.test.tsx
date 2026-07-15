@@ -106,3 +106,26 @@ test("starts the avatar-correction scan without a send action", async () => {
   await waitFor(() => expect(apiMocks.refreshFriendAvatars).toHaveBeenCalledTimes(1));
   expect(apiMocks.scanFriends).not.toHaveBeenCalled();
 });
+
+test("selects target cards by click and keyboard without letting nested controls toggle twice", async () => {
+  render(<FriendsPage notify={vi.fn()} />);
+
+  const checkbox = await screen.findByRole("checkbox", { name: "选择 小明" });
+  const card = checkbox.closest(".friend-editor-row");
+  const deleteButton = screen.getByRole("button", { name: "删除 小明" });
+
+  expect(card).not.toBeNull();
+  expect(checkbox).not.toBeChecked();
+  fireEvent.click(card!);
+  expect(checkbox).toBeChecked();
+  fireEvent.keyDown(card!, { key: "Enter" });
+  expect(checkbox).not.toBeChecked();
+  fireEvent.keyDown(card!, { key: " " });
+  expect(checkbox).toBeChecked();
+
+  fireEvent.click(checkbox);
+  expect(checkbox).not.toBeChecked();
+  fireEvent.click(deleteButton);
+  expect(apiMocks.friendBatch).toHaveBeenCalledWith(["friend-xiaoming"], "delete");
+  expect(checkbox).not.toBeChecked();
+});

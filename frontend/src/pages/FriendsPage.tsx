@@ -165,15 +165,16 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
           {friends.map((friend, index) => {
             const targetId = friend.target_id || friend.id;
             if (!targetId) return null;
-            return <div className="friend-editor-row" key={targetId}>
-              <input className="row-check" aria-label={`选择 ${friend.display_name}`} type="checkbox" checked={batchSelected.has(targetId)} onChange={(event) => { const next = new Set(batchSelected); if (event.target.checked) next.add(targetId); else next.delete(targetId); setBatchSelected(next); }} />
+            const toggle = () => setBatchSelected((current) => { const next = new Set(current); if (next.has(targetId)) next.delete(targetId); else next.add(targetId); return next; });
+            return <div className={`friend-editor-row${batchSelected.has(targetId) ? " selected" : ""}`} key={targetId} role="button" tabIndex={0} aria-selected={batchSelected.has(targetId)} onClick={toggle} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}>
+              <input className="row-check" aria-label={`选择 ${friend.display_name}`} type="checkbox" checked={batchSelected.has(targetId)} onClick={(event) => event.stopPropagation()} onChange={(event) => { const next = new Set(batchSelected); if (event.target.checked) next.add(targetId); else next.delete(targetId); setBatchSelected(next); }} />
               <FriendAvatar name={friend.display_name} url={friend.avatar_url} />
               <span className="row-number">{index + 1}</span>
               <div className="friend-editor-copy">
                 <strong>{friend.display_name}</strong>
                 <small>{`${friend.enabled ? "已启用" : "已停用"} · ${todayLabel(friend.today_status)}${friend.last_success_date ? ` · 最近成功 ${friend.last_success_date}` : ""}`}</small>
               </div>
-              <button className="icon-button danger" aria-label={`删除 ${friend.display_name}`} onClick={() => void api.friendBatch([targetId], "delete").then(load)}><Trash2 size={17} /></button>
+              <button className="icon-button danger" aria-label={`删除 ${friend.display_name}`} onClick={(event) => { event.stopPropagation(); void api.friendBatch([targetId], "delete").then(load); }}><Trash2 size={17} /></button>
             </div>;
           })}
         </div>
@@ -181,7 +182,7 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
 
       {discovery ? <section className="panel discovery-panel">
         <div className="panel-heading"><div><h2>识别到的候选好友</h2><small className="discovery-status">候选好友来自本地缓存{discovery.scanned_at ? ` · 上次扫描：${discovery.scanned_at.replace("T", " ")}` : ""}{discovery.stale ? " · 缓存待更新" : " · 缓存当前"}</small>{discovery.refresh_running ? <small className="discovery-progress">{discovery.progress?.message ?? "正在后台更新候选好友和头像…"}{discovery.progress?.current ? `：已识别 ${discovery.progress.current}${discovery.progress.total ? ` / ${discovery.progress.total}` : ""}` : ""}</small> : null}{discovery.progress?.status === "partial_timeout" ? <small className="discovery-progress">扫描超时，已保留上次结果。</small> : null}</div></div>
-        <div className="candidate-grid">{[...discovery.candidates].sort((left, right) => {
+        <div className="candidate-grid">{discovery.candidates.filter((candidate) => candidate.presence_status !== "stale").sort((left, right) => {
           const group = (candidate: FriendDiscovery["candidates"][number]) => candidate.presence_status === "stale" ? 2 : candidate.configured ? 1 : 0;
           return group(left) - group(right);
         }).map((candidate) => {

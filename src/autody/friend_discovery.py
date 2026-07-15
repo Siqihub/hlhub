@@ -279,7 +279,7 @@ def _scan_items(
     deadline: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     progress: Callable[[str, int, int | None], None] | None = None,
-) -> tuple[list[_ScannedItem], bool]:
+) -> tuple[list[_ScannedItem], bool, bool]:
     """Read visible conversation rows while keeping avatar failures non-fatal."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     conversations = page.locator(selectors.conversation)
@@ -289,6 +289,7 @@ def _scan_items(
     missing_counts: Counter[str] = Counter()
 
     partial_timeout = False
+    completed_bottom_reached = False
     try:
         scrollable.first.wait_for(state="visible", timeout=avatar_timeout_ms)
     except AttributeError:  # test doubles do not implement wait_for
@@ -414,6 +415,7 @@ def _scan_items(
             break
 
         if not scrollable.count():
+            completed_bottom_reached = True
             break
         metrics = scrollable.first.evaluate(
             """el => ({
@@ -423,13 +425,14 @@ def _scan_items(
             })"""
         )
         if metrics["before"] >= metrics["maximum"]:
+            completed_bottom_reached = True
             break
         scrollable.first.evaluate(
             "(el, step) => { el.scrollTop += step; el.dispatchEvent(new Event('scroll')); }",
             metrics["step"],
         )
         page.wait_for_timeout(250)
-    return items, partial_timeout
+    return items, partial_timeout, completed_bottom_reached
 
 
 def _avatar_needs_refresh(path: Path, now: datetime) -> bool:
@@ -549,7 +552,7 @@ def discover_friends(
             return True
         return identity_key not in fresh_avatar_identities
     started = monotonic()
-    scanned, partial_timeout = _scan_items(
+    scanned, partial_timeout, completed_bottom_reached = _scan_items(
         page,
         selectors,
         cache_dir,
@@ -710,8 +713,28 @@ def discover_friends(
     finally:
         _discard_temporary(scanned)
 
+    removed_stale_candidates = 0
+    if completed_bottom_reached and not partial_timeout:
+        linked_candidate_ids = set(targets_by_candidate_id)
+        kept: list[FriendCandidate] = []
+        for candidate in candidates:
+            if candidate.presence_status == "stale" and candidate.candidate_id not in linked_candidate_ids:
+                removed_stale_candidates += 1
+                continue
+            kept.append(candidate)
+        candidates = kept
+        referenced_avatar_keys = {
+            candidate.avatar_cache_key or candidate.candidate_id
+            for candidate in candidates
+            if candidate.avatar_cache_key or candidate.candidate_id
+        }
+        for candidate in previous.candidates if previous else []:
+            key = candidate.avatar_cache_key or candidate.candidate_id
+            if candidate.candidate_id not in {item.candidate_id for item in candidates} and key not in referenced_avatar_keys:
+                _avatar_path(cache_dir, key).unlink(missing_ok=True)
+
     last_result: dict[str, object] = {
-        "status": "partial_timeout" if partial_timeout else "completed_with_avatar_failures" if avatars_failed else "completed",
+        "status": "partial_timeout" if partial_timeout else "completed_with_avatar_failures" if avatars_failed else "completed_bottom_reached" if completed_bottom_reached else "partial_scroll_limit",
         "finished_at": scanned_at,
         "scan_id": scan_id,
         "candidates_found": len(scanned),
@@ -722,6 +745,8 @@ def discover_friends(
         "avatars_failed": avatars_failed,
         "stale_candidates": sum(item.presence_status == "stale" for item in candidates),
         "partial": partial_timeout,
+        "completed_bottom_reached": completed_bottom_reached,
+        "removed_stale_candidates": removed_stale_candidates,
     }
     if progress:
         progress("writing_cache", len(scanned), len(scanned))
@@ -747,7 +772,7 @@ def refresh_configured_avatars(
     avatar_cache_dir: Path,
 ) -> AvatarRefreshResult:
     """Refresh only unambiguous configured-avatar associations; never edit names."""
-    scanned, _ = _scan_items(page, selectors, avatar_cache_dir)
+    scanned, _, _ = _scan_items(page, selectors, avatar_cache_dir)
     by_name: dict[str, list[_ScannedItem]] = defaultdict(list)
     for item in scanned:
         by_name[item.name].append(item)

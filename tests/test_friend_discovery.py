@@ -375,6 +375,37 @@ def test_deadline_saves_partial_scan_with_a_clear_status(tmp_path: Path):
     assert load_discovered_friends(output) is not None
 
 
+def test_partial_scan_preserves_previous_candidates_and_avatars(tmp_path: Path):
+    selectors = ChatSelectors.test_defaults()
+    output = tmp_path / "data" / "discovered_friends.json"
+    cache = tmp_path / "data" / "avatar-cache"
+    first = discover_friends(
+        AppConfig(),
+        FakePage(selectors, [[FakeConversationItem(selectors, "历史候选", b"keep", "keep-row")]]),
+        selectors,
+        output,
+        avatar_cache_dir=cache,
+        now=lambda: datetime(2026, 7, 4, 8, 0, 0),
+    )
+    avatar = cache / f"{first.candidates[0].avatar_cache_key}.png"
+    ticks = iter([0.0, 0.0, 0.0, 2.0])
+
+    result = discover_friends(
+        AppConfig(),
+        FakePage(selectors, [[FakeConversationItem(selectors, "不完整新候选", b"new", "new-row")]]),
+        selectors,
+        output,
+        avatar_cache_dir=cache,
+        overall_timeout_ms=1,
+        monotonic=lambda: next(ticks),
+        now=lambda: datetime(2026, 7, 5, 8, 0, 0),
+    )
+
+    assert [candidate.display_name for candidate in result.candidates] == ["历史候选"]
+    assert avatar.read_bytes() == b"keep"
+    assert result.last_result["status"] == "partial_timeout"
+
+
 def test_avatar_capture_failure_does_not_block_later_rows(tmp_path: Path):
     selectors = ChatSelectors.test_defaults()
 
@@ -439,13 +470,11 @@ def test_discovery_preserves_candidate_identity_and_marks_missed_rows_stale(tmp_
         now=lambda: datetime(2026, 7, 5, 8, 0, 0),
     )
 
-    previous = next(item for item in second.candidates if item.display_name == "旧候选")
     current = next(item for item in second.candidates if item.display_name == "新候选")
-    assert previous.candidate_id == first.candidates[0].candidate_id
-    assert previous.presence_status == "stale"
-    assert previous.first_discovered_at == "2026-07-04T08:00:00"
+    assert all(item.display_name != "旧候选" for item in second.candidates)
     assert current.presence_status == "current"
-    assert second.last_result["status"] == "completed"
+    assert second.last_result["status"] == "completed_bottom_reached"
+    assert second.last_result["removed_stale_candidates"] == 1
     assert second.last_result["candidates_found"] == 1
 
 
