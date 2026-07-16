@@ -1,9 +1,19 @@
-﻿$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Output = Join-Path $Root "output"
 $Stage = Join-Path $Output "AutoDy-Windows"
 $Archive = Join-Path $Output "AutoDy-Windows-Portable.zip"
 $Checksum = Join-Path $Output "AutoDy-Windows-Portable.zip.sha256"
+
+Get-ChildItem -LiteralPath (Join-Path $Root "scripts") -Filter *.ps1 | ForEach-Object {
+    $tokens = $null
+    $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+    if ($errors.Count -gt 0) {
+        throw "PowerShell parser validation failed for $($_.Name): $($errors.Message -join '; ')"
+    }
+}
 
 if (Test-Path $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }
 if (Test-Path $Archive) { Remove-Item -LiteralPath $Archive -Force }
@@ -26,7 +36,7 @@ foreach ($item in $items) {
 # avatar-cache, discovered_friends.json, account-profile.json, account-avatar,
 # config.yaml, messages.txt, node_modules, .git.
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Archive -Force
-$forbidden = @("config.yaml", "messages.txt", ".venv", "node_modules", "browser-profile", "avatar-cache", "account-profile", "account-avatar", "discovered_friends", "data\\logs", "data\\history", "data\\preflight")
+$forbidden = @("config.yaml", "messages.txt", ".venv", "node_modules", "browser-profile", "avatar-cache", "account-profile", "account-avatar", "discovered_friends", "data\logs", "data\history", "data\preflight")
 $entries = Get-ChildItem -LiteralPath $Stage -Recurse -Force | ForEach-Object { $_.FullName.Substring($Stage.Length).TrimStart('\\') }
 foreach ($item in $forbidden) {
     if ($entries | Where-Object { $_ -like "*$item*" }) { throw "Portable archive staging contains excluded local data: $item" }
