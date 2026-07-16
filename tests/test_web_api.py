@@ -536,7 +536,7 @@ def test_scan_friends_endpoint_starts_action_and_lists_candidates(tmp_path: Path
     assert candidates.json()["candidates"][1]["avatar_url"] == "/api/avatars/candidate-new"
 
 
-def test_stale_discovery_returns_cached_rows_and_starts_one_background_refresh(tmp_path: Path):
+def test_stale_discovery_returns_cached_rows_and_starts_one_background_refresh(tmp_path: Path, monkeypatch):
     calls = []
     config = make_project(tmp_path)
     (tmp_path / "data" / "health.json").write_text('{"status":"success"}', encoding="utf-8")
@@ -552,6 +552,7 @@ def test_stale_discovery_returns_cached_rows_and_starts_one_background_refresh(t
         }, ensure_ascii=False),
         encoding="utf-8",
     )
+    monkeypatch.setattr("autody.web_api.time.monotonic", lambda: 0.0)
     client = TestClient(create_app(
         config,
         action_runner=lambda action: calls.append(action) or {"id": "scan-1", "action": action, "status": "running"},

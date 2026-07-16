@@ -516,7 +516,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     discovery_refresh: dict[str, object] = {
         "job_id": None,
         "running": False,
-        "last_attempt": 0.0,
+        "last_attempt": None,
     }
     preflight_job_id: str | None = None
 
@@ -554,7 +554,8 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         with discovery_refresh_lock:
             if discovery_refresh["running"]:
                 return True
-            if time.monotonic() - float(discovery_refresh["last_attempt"]) < 300:
+            last_attempt = discovery_refresh["last_attempt"]
+            if last_attempt is not None and time.monotonic() - float(last_attempt) < 300:
                 return False
             try:
                 job = run_action("background-discovery")
