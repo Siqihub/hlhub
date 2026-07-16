@@ -1,7 +1,7 @@
 import { Check, Radar, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AppConfig, ConfiguredFriend, FriendDiscovery } from "../types";
+import type { AppConfig, ConfiguredFriend, FriendDiscovery, PreflightResult } from "../types";
 
 function FriendAvatar({ name, url }: { name: string; url?: string }) {
   const initial = name.trim().slice(0, 1) || "?";
@@ -31,16 +31,18 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
   const [batchSelected, setBatchSelected] = useState<Set<string>>(() => new Set());
   const [busyAction, setBusyAction] = useState<"scan" | "avatar" | null>(null);
   const [addingCandidateId, setAddingCandidateId] = useState<string | null>(null);
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const refreshWasRunning = useRef(false);
 
   const load = async () => {
     try {
-      const [nextConfig, nextFriends, nextDiscovery] = await Promise.all([
-        api.config(), api.friends(), api.discoveredFriends()
+      const [nextConfig, nextFriends, nextDiscovery, latest] = await Promise.all([
+        api.config(), api.friends(), api.discoveredFriends(), api.preflightLatest()
       ]);
       setConfig(nextConfig);
       setFriends(nextFriends.friends);
       setDiscovery(nextDiscovery.scanned_at ? nextDiscovery : null);
+      setPreflight(latest.result);
     } catch (error) {
       notify(error instanceof Error ? error.message : "好友配置加载失败");
     }
@@ -147,6 +149,14 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
       notify(error instanceof Error ? error.message : "批量操作失败");
     }
   };
+  const checkTarget = async (targetId: string) => {
+    try {
+      const job = await api.runPreflight([targetId]);
+      await api.waitForAction(job.id);
+      setPreflight((await api.preflightLatest()).result);
+      notify("发送前自检已完成");
+    } catch (error) { notify(error instanceof Error ? error.message : "发送前自检启动失败"); }
+  };
 
   return (
     <section className="editor-page">
@@ -167,13 +177,15 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
             if (!targetId) return null;
             const toggle = () => setBatchSelected((current) => { const next = new Set(current); if (next.has(targetId)) next.delete(targetId); else next.add(targetId); return next; });
             const selected = batchSelected.has(targetId);
+            const preflightRow = preflight?.targets.find((item) => item.target_id === targetId);
             return <div className={`friend-editor-row${selected ? " selected" : ""}${friend.enabled ? "" : " disabled-target"}`} key={targetId} role="button" tabIndex={0} aria-selected={selected} onClick={toggle} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}>
               <input className="row-check" aria-label={`选择 ${friend.display_name}`} type="checkbox" checked={batchSelected.has(targetId)} onClick={(event) => event.stopPropagation()} onChange={(event) => { const next = new Set(batchSelected); if (event.target.checked) next.add(targetId); else next.delete(targetId); setBatchSelected(next); }} />
               <FriendAvatar name={friend.display_name} url={friend.avatar_url} />
               <div className="friend-editor-copy">
                 <strong>{friend.display_name}</strong>
-                <small><span className={friend.enabled ? "target-status" : "target-status paused"}>{friend.enabled ? "已启用" : "已停用"}</span>{todayLabel(friend.today_status)}{friend.last_success_date ? ` · 最近成功：${friend.last_success_date}` : ""}</small>
+                <small><span className={friend.enabled ? "target-status" : "target-status paused"}>{friend.enabled ? "已启用" : "已停用"}</span>{todayLabel(friend.today_status)}{preflightRow ? ` · ${preflightRow.user_message}` : " · 未检测"}{friend.last_success_date ? ` · 最近成功：${friend.last_success_date}` : ""}</small>
               </div>
+              {friend.enabled ? <button className="text-button target-preflight" onClick={(event) => { event.stopPropagation(); void checkTarget(targetId); }}>测试可发送状态</button> : null}
               {selected ? <span className="selection-indicator" aria-label="已选择"><Check size={13} /></span> : null}
               <button className="icon-button danger" aria-label={`删除 ${friend.display_name}`} onClick={(event) => { event.stopPropagation(); void api.friendBatch([targetId], "delete").then(load); }}><Trash2 size={17} /></button>
             </div>;

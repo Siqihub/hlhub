@@ -11,7 +11,9 @@ const apiMocks = vi.hoisted(() => ({
   waitForAction: vi.fn(),
   addCandidateToTargets: vi.fn(),
   friendBatch: vi.fn(),
-  saveConfig: vi.fn()
+  saveConfig: vi.fn(),
+  preflightLatest: vi.fn(),
+  runPreflight: vi.fn()
 }));
 
 vi.mock("../api", () => ({ api: apiMocks }));
@@ -70,6 +72,8 @@ beforeEach(() => {
   });
   apiMocks.friendBatch.mockResolvedValue({ affected: 1 });
   apiMocks.saveConfig.mockResolvedValue(config);
+  apiMocks.preflightLatest.mockResolvedValue({ result: null });
+  apiMocks.runPreflight.mockResolvedValue({ id: "preflight-1", action: "preflight", status: "running" });
 });
 
 afterEach(() => {
@@ -130,5 +134,15 @@ test("selects target cards by click and keyboard without letting nested controls
   expect(checkbox).not.toBeChecked();
   fireEvent.click(deleteButton);
   expect(apiMocks.friendBatch).toHaveBeenCalledWith(["friend-xiaoming"], "delete");
+  expect(checkbox).not.toBeChecked();
+});
+
+test("runs a single-target preflight without changing target selection", async () => {
+  render(<FriendsPage notify={vi.fn()} />);
+
+  const checkbox = await screen.findByRole("checkbox", { name: "选择 小明" });
+  fireEvent.click(screen.getByRole("button", { name: "测试可发送状态" }));
+
+  await waitFor(() => expect(apiMocks.runPreflight).toHaveBeenCalledWith(["friend-xiaoming"]));
   expect(checkbox).not.toBeChecked();
 });

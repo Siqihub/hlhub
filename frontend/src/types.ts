@@ -135,6 +135,7 @@ export interface AppConfig {
   friend_order: "configured" | "randomized";
   message_selection: "one_for_all" | "per_friend";
   completion_notifications_enabled: boolean;
+  preflight_after_health_enabled: boolean;
   log_retention_days: number;
   log_cleanup_enabled: boolean;
   active_log_retention_days: number;
@@ -258,4 +259,33 @@ export interface ConfiguredFriend {
   today_status: "success" | "failed" | "pending";
   last_success_date: string | null;
   ambiguous_duplicate?: boolean;
+}
+
+export interface PreflightTargetResult {
+  target_id: string;
+  display_name: string;
+  target_status: string;
+  user_message: string;
+  checked_at: string;
+  composer_found: boolean;
+  send_control_found: boolean;
+}
+
+export interface PreflightResult {
+  check_id: string;
+  completed_at: string;
+  global_status: string;
+  total_targets: number;
+  ready_count: number;
+  failed_count: number;
+  blocked_count: number;
+  cancelled: boolean;
+  targets: PreflightTargetResult[];
+}
+
+export interface PreflightProgress {
+  running: boolean;
+  completed_targets: number;
+  total_targets: number;
+  current_status: string;
 }

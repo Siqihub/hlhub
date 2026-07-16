@@ -1,7 +1,9 @@
 import { AlertTriangle, ArchiveRestore, CalendarPlus2, Download, Play, ScanLine, ShieldCheck, Wrench } from "lucide-react";
+import { useEffect, useState } from "react";
 import { ActionButton } from "../components/ActionButton";
 import { StatusRail } from "../components/StatusRail";
-import type { DashboardStatus } from "../types";
+import { api } from "../api";
+import type { DashboardStatus, PreflightProgress, PreflightResult } from "../types";
 import type { ViewName } from "../components/Sidebar";
 
 const statusLabel = {
@@ -28,6 +30,25 @@ export function DashboardPage({
   onAction: (action: string) => void;
   onNavigate: (view: ViewName) => void;
 }) {
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
+  const [preflightRunning, setPreflightRunning] = useState(false);
+  const [preflightProgress, setPreflightProgress] = useState<PreflightProgress | null>(null);
+  const [showPreflightDetails, setShowPreflightDetails] = useState(false);
+  const loadPreflight = async () => {
+    const current = await api.preflightStatus();
+    setPreflight(current.result); setPreflightRunning(current.running); setPreflightProgress(current.progress);
+  };
+  useEffect(() => { void loadPreflight(); }, []);
+  useEffect(() => {
+    if (!preflightRunning) return;
+    const timer = window.setInterval(() => { void loadPreflight(); }, 1200);
+    return () => window.clearInterval(timer);
+  }, [preflightRunning]);
+  const startPreflight = async () => {
+    await api.runPreflight();
+    setPreflightRunning(true);
+    setPreflightProgress({ running: true, completed_targets: 0, total_targets: 0, current_status: "checking_chat_page" });
+  };
   const handleIssue = (action: string) => {
     if (["friends", "messages", "packs", "scheduler", "logs", "backup", "settings"].includes(action)) {
       onNavigate(action as ViewName);
@@ -52,6 +73,11 @@ export function DashboardPage({
         <article className="panel stat-card"><small>连续成功</small><strong>{status.statistics.consecutive_successful_days} 天</strong><span>近 7 天 {status.statistics.success_rate_7d}%</span></article>
         <article className="panel stat-card"><small>近 30 天成功率</small><strong>{status.statistics.success_rate_30d}%</strong><span>7 天重试 {status.statistics.retries_7d} 次</span></article>
         <article className="panel stat-card"><small>本机资源</small><strong>{status.statistics.enabled_friend_count} 位好友</strong><span>{status.statistics.local_message_count} 条文案 · {status.statistics.active_message_pack_count} 个文案包</span></article>
+      </section>
+      <section className="panel preflight-panel">
+        <div className="panel-heading"><div><h2>发送前自检</h2><small>只检查聊天页面条件；不会输入、准备或发送任何消息。</small></div><div className="inline-actions">{preflight ? <button className="text-button" onClick={() => setShowPreflightDetails(!showPreflightDetails)}>查看详情</button> : null}<button className="action-button primary" disabled={!!busy || preflightRunning} onClick={() => void startPreflight()}>{preflightRunning ? "正在检测…" : "测试全部续火目标"}</button>{preflightRunning ? <button className="action-button" onClick={() => void api.cancelPreflight()}>取消检测</button> : null}</div></div>
+        <div className="preflight-summary">{preflightRunning ? <span>正在检测 {preflightProgress?.completed_targets ?? 0} / {preflightProgress?.total_targets || "…"}：正在检查聊天页面…</span> : preflight ? <><span>上次检测：{new Date(preflight.completed_at).toLocaleString("zh-CN")}</span><span>检测目标：{preflight.total_targets}</span><span>具备条件：{preflight.ready_count}</span><span>异常：{preflight.failed_count + preflight.blocked_count}</span><span>状态：{preflight.global_status}</span></> : <span>尚未检测</span>}</div>
+        {showPreflightDetails && preflight ? <div className="preflight-details">{preflight.targets.map((target) => <article key={target.target_id}><strong>{target.display_name}</strong><span className={target.target_status === "ready" ? "tag success" : "tag warning"}>{target.user_message}</span><small>{target.checked_at.replace("T", " ")}</small></article>)}</div> : null}
       </section>
       <div className="dashboard-grid">
         <section className="panel history-panel">

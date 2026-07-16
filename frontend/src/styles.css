@@ -57,6 +57,14 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .status-item.green strong { color: #18ac55; }
 .status-item.amber strong { color: #e48b00; }
 .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.preflight-panel { margin-bottom: 16px; }
+.preflight-panel .panel-heading > div:first-child { display: grid; gap: 3px; }
+.preflight-panel .panel-heading small { color: #7d899c; font-size: 11px; }
+.preflight-summary { min-height: 48px; padding: 14px 17px; display: flex; gap: 16px; flex-wrap: wrap; color: #58687d; font-size: 12px; }
+.preflight-details { border-top: 1px solid #edf1f5; }
+.preflight-details article { min-height: 42px; padding: 8px 17px; display: flex; gap: 12px; align-items: center; border-top: 1px solid #f0f3f7; font-size: 12px; }
+.preflight-details article:first-child { border-top: 0; }
+.preflight-details small { margin-left: auto; color: #8b97a8; }
 .stat-card { min-height: 104px; padding: 18px; display: grid; gap: 6px; align-content: center; }
 .stat-card small, .stat-card span { color: #7d899c; font-size: 11px; }
 .stat-card strong { color: #13213a; font-size: 20px; }
@@ -92,6 +100,7 @@ td { height: 43px; padding: 0 14px; border-top: 1px solid #edf1f5; color: #26344
 .text-button { display: inline-flex; align-items: center; gap: 5px; border: 0; color: #1769e8; background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; }
 .friend-editor-list { padding: 8px 16px; display: grid; gap: 8px; }
 .friend-editor-row { position: relative; min-height: 68px; display: grid; grid-template-columns: 42px minmax(120px, 1fr) 38px; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #e4eaf1; border-radius: 8px; background: #fff; transition: background .14s ease, border-color .14s ease, box-shadow .14s ease; }
+.target-preflight { white-space: nowrap; }
 .friend-editor-row:hover { border-color: #b8c9dc; background: #fbfdff; box-shadow: 0 2px 7px rgba(37,67,105,.08); }
 .friend-editor-row.selected { border-width: 2px; padding: 9px 11px; }
 .friend-editor-row.disabled-target:not(.selected) { background: #fafbfc; }
