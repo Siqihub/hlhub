@@ -1,5 +1,13 @@
 targets:
   - name: "好友备注名"
+    enabled: true
+    note: ""
+    # 留空表示使用全局文案库和后缀；可在管理台为单个目标覆写。
+    message_pack:
+    suffix_mode: global
+    delay_offset_minutes: 0
+    message_selection:
+    send_order:
 messages_file: messages.txt
 profile_dir: data/browser-profile
 state_file: data/state.json
@@ -29,4 +37,7 @@ friend_order: configured
 message_selection: one_for_all
 completion_notifications_enabled: true
 log_retention_days: 30
+log_cleanup_enabled: true
+active_log_retention_days: 14
+archive_log_retention_days: 90
 mask_log_friend_names: true

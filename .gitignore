@@ -13,6 +13,14 @@ output/
 config.yaml
 messages.txt
 data/
+# Local working notes and generated launcher copies are intentionally private.
+/CODEX.md
+/COMMON_COMMANDS.md
+/CURRENT_STATUS.md
+/DO_NOT_DELETE.md
+/PROJECT_PROFILE.md
+/TASK_QUEUE.md
+/scripts/autody-dashboard.cmd
 # Local avatar screenshots are personal data and are never packaged or backed up.
 data/avatar-cache/
 data/discovered_friends.json

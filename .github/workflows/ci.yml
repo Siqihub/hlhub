@@ -31,4 +31,12 @@ jobs:
           python -m playwright install chromium
       - name: Run Python tests
         run: pytest -q
-
+      - name: Build and inspect portable archive
+        shell: powershell
+        run: |
+          .\scripts\build-portable.ps1
+          if (-not (Test-Path output\AutoDy-Windows-Portable.zip.sha256)) { throw "checksum missing" }
+          Expand-Archive output\AutoDy-Windows-Portable.zip output\ci-portable -Force
+          $forbidden = @("config.yaml", "messages.txt", ".venv", "node_modules", "browser-profile", "avatar-cache", "account-profile", "account-avatar", "discovered_friends", "data\logs", "data\history", "data\preflight")
+          $entries = Get-ChildItem output\ci-portable -Recurse -Force | ForEach-Object { $_.FullName.Substring((Resolve-Path output\ci-portable).Path.Length) }
+          foreach ($item in $forbidden) { if ($entries | Where-Object { $_ -like "*$item*" }) { throw "sensitive portable entry: $item" } }
