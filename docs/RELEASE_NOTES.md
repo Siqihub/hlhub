@@ -1,9 +1,8 @@
-# AutoDy v1.1.0
+# AutoDy v1.1.1
 
-- Adds a structured failed-target center and strict safe-retry boundary.
-- Adds target-specific message, suffix, order and delay settings.
-- Adds a read-only today sending plan and an environment status center.
-- Includes read-only send preflight, account/avatar support, log retention and launcher corrections.
-- Excludes local account, browser, cache and log data from source and portable artifacts.
+- Reuses a valid project virtual environment instead of recreating it during normal installation updates.
+- Stops only an identified project AutoDy service when an invalid environment must be repaired.
+- Makes native installer failures stop the installation and return a non-zero exit code.
+- Repairs Windows PowerShell 5.1 shortcut-script encoding compatibility and validates every tracked PowerShell script before portable packaging.
 
-Known limitation: platform page changes can make browser checks unavailable. AutoDy stops safely and records the reason rather than guessing a send result.
+No local account, browser, cache, message, history, or log data is included in source or portable artifacts.
