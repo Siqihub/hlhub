@@ -1,12 +1,14 @@
 from pathlib import Path
 
 
-def test_installer_creates_environment_browser_and_shortcut():
+def test_installer_reuses_or_creates_environment_browser_and_shortcut():
     text = Path("scripts/install.ps1").read_text(encoding="utf-8-sig")
     for token in [
-        "python -m venv",
-        'pip install -e "."',
-        "playwright install chromium",
+        "Test-VirtualEnvironment",
+        "New-ProjectVirtualEnvironment",
+        "Invoke-NativeChecked",
+        '"pip", "install", "-e", "."',
+        '"playwright", "install", "chromium"',
         "install-shortcut.ps1",
         "config.example.yaml",
     ]:
@@ -46,10 +48,10 @@ def test_dashboard_launcher_and_shortcut_are_portable_and_use_icon():
     shortcut = Path("scripts/install-shortcut.ps1").read_text(encoding="utf-8-sig")
     for token in [
         "WScript.Shell",
-        "AutoDy 管理台.lnk",
+        "AutoDy Management.lnk",
         "assets\\icons\\autody.ico",
-        "AutoDy-重新登录.cmd",
-        "AutoDy-需要处理.txt",
+        "Set-StrictMode -Version Latest",
+        "('{0},0' -f $Icon)",
     ]:
         assert token in shortcut
     assert "start-dashboard.cmd" in shortcut or "autody-dashboard.cmd" in shortcut
