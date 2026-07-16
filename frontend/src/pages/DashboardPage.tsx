@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { ActionButton } from "../components/ActionButton";
 import { StatusRail } from "../components/StatusRail";
 import { api } from "../api";
-import type { DashboardStatus, PreflightProgress, PreflightResult } from "../types";
+import type { DashboardStatus, FailedTargetCenter, PreflightProgress, PreflightResult, ServiceIdentity, TodayPlan } from "../types";
 import type { ViewName } from "../components/Sidebar";
 
 const statusLabel = {
@@ -34,11 +34,19 @@ export function DashboardPage({
   const [preflightRunning, setPreflightRunning] = useState(false);
   const [preflightProgress, setPreflightProgress] = useState<PreflightProgress | null>(null);
   const [showPreflightDetails, setShowPreflightDetails] = useState(false);
+  const [plan, setPlan] = useState<TodayPlan | null>(null);
+  const [failedTargets, setFailedTargets] = useState<FailedTargetCenter | null>(null);
+  const [identity, setIdentity] = useState<ServiceIdentity | null>(null);
   const loadPreflight = async () => {
     const current = await api.preflightStatus();
     setPreflight(current.result); setPreflightRunning(current.running); setPreflightProgress(current.progress);
   };
   useEffect(() => { void loadPreflight(); }, []);
+  const loadOperationalPanels = async () => {
+    const [nextPlan, nextFailures, nextIdentity] = await Promise.all([api.todayPlan(), api.failedTargets(), api.serviceIdentity()]);
+    setPlan(nextPlan); setFailedTargets(nextFailures); setIdentity(nextIdentity);
+  };
+  useEffect(() => { void loadOperationalPanels(); }, []);
   useEffect(() => {
     if (!preflightRunning) return;
     const timer = window.setInterval(() => { void loadPreflight(); }, 1200);
@@ -78,6 +86,18 @@ export function DashboardPage({
         <div className="panel-heading"><div><h2>发送前自检</h2><small>只检查聊天页面条件；不会输入、准备或发送任何消息。</small></div><div className="inline-actions">{preflight ? <button className="text-button" onClick={() => setShowPreflightDetails(!showPreflightDetails)}>查看详情</button> : null}<button className="action-button primary" disabled={!!busy || preflightRunning} onClick={() => void startPreflight()}>{preflightRunning ? "正在检测…" : "测试全部续火目标"}</button>{preflightRunning ? <button className="action-button" onClick={() => void api.cancelPreflight()}>取消检测</button> : null}</div></div>
         <div className="preflight-summary">{preflightRunning ? <span>正在检测 {preflightProgress?.completed_targets ?? 0} / {preflightProgress?.total_targets || "…"}：正在检查聊天页面…</span> : preflight ? <><span>上次检测：{new Date(preflight.completed_at).toLocaleString("zh-CN")}</span><span>检测目标：{preflight.total_targets}</span><span>具备条件：{preflight.ready_count}</span><span>异常：{preflight.failed_count + preflight.blocked_count}</span><span>状态：{preflight.global_status}</span></> : <span>尚未检测</span>}</div>
         {showPreflightDetails && preflight ? <div className="preflight-details">{preflight.targets.map((target) => <article key={target.target_id}><strong>{target.display_name}</strong><span className={target.target_status === "ready" ? "tag success" : "tag warning"}>{target.user_message}</span><small>{target.checked_at.replace("T", " ")}</small></article>)}</div> : null}
+      </section>
+      <section className="panel">
+        <div className="panel-heading"><div><h2>今日发送计划</h2><small>仅预览当前配置和状态；不会打开浏览器、消耗文案或创建任务记录。</small></div><div className="inline-actions"><button className="text-button" onClick={() => void loadOperationalPanels()}>刷新今日计划</button><button className="text-button" onClick={() => void startPreflight()}>执行发送前自检</button><button className="text-button" onClick={() => onNavigate("logs")}>查看异常目标</button></div></div>
+        {plan ? <><div className="preflight-summary"><span>主任务：{plan.main_scheduled_time}</span><span>启用：{plan.enabled_target_count}</span><span>完成：{plan.completed_count}</span><span>待执行：{plan.pending_count}</span><span>阻止：{plan.blocked_count}</span></div><div className="preflight-details">{plan.targets.map((target) => <article key={target.target_id}><strong>{target.display_name}</strong><span>{new Date(target.planned_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · {target.message_source} · {target.suffix}</span><small>{target.status === "blocked" ? target.blocked_reason : target.status === "success" ? "今日已完成" : target.status === "failed" ? "等待处理" : "待执行"}</small></article>)}</div></> : <div className="empty-state compact">正在生成今日计划…</div>}
+      </section>
+      <section className="panel issues-panel">
+        <div className="panel-heading"><div><h2>今日异常目标</h2><small>{failedTargets ? `成功：${failedTargets.summary.success} · 异常：${failedTargets.summary.failed} · 结果不确定：${failedTargets.summary.uncertain} · 需要处理：${failedTargets.summary.needs_attention}` : "正在读取结构化任务状态…"}</small></div><button className="text-button" onClick={() => void loadOperationalPanels()}>刷新</button></div>
+        {failedTargets?.items.length ? <div className="issue-list">{failedTargets.items.map((target) => <article className="issue-item warning" key={target.target_id}><AlertTriangle size={19} /><div><strong>{target.display_name} · {target.explanation}</strong><small>{target.reason_code} · {target.uncertain ? "结果不确定，禁止重试" : target.no_send_action_definitely_occurred ? "确认未发送" : "请查看详细原因"}</small></div>{target.safe_retry_available ? <button className="action-button" onClick={() => void api.retryFailedTarget(target.target_id).then(loadOperationalPanels)}>安全重试明确未发送目标</button> : null}</article>)}</div> : <div className="empty-state compact">今日没有需要处理的异常目标。</div>}
+      </section>
+      <section className="panel">
+        <div className="panel-heading"><div><h2>运行环境</h2><small>仅显示本机运行身份，不包含账号凭据或浏览器资料。</small></div><div className="inline-actions"><button className="text-button" disabled={!!busy} onClick={() => onAction("login")}>重新登录抖音</button><button className="text-button" disabled={!!busy} onClick={() => onAction("refresh-account-profile")}>刷新账号资料</button><button className="text-button" disabled={!!busy} onClick={() => onAction("repair-playwright")}>修复 Chromium</button><button className="text-button" disabled={!!busy} onClick={() => onAction("install-scheduler")}>重建定时任务</button></div></div>
+        {identity ? <div className="preflight-summary"><span>版本：{identity.version}</span><span>提交：{identity.git_commit || "未检测"}</span><span>Python：{identity.python_executable}</span><span>前端：{identity.frontend_build_version}</span><span>登录：{status.login.status}</span></div> : <div className="empty-state compact">正在检查本机运行环境…</div>}
       </section>
       <div className="dashboard-grid">
         <section className="panel history-panel">

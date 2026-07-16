@@ -20,7 +20,10 @@ const apiMocks = vi.hoisted(() => ({
   preflightLatest: vi.fn().mockResolvedValue({ result: { global_status: "ready", total_targets: 1, ready_count: 1, failed_count: 0, blocked_count: 0, completed_at: "2026-07-16T07:20:00", targets: [] } }),
   preflightStatus: vi.fn().mockResolvedValue({ running: false, result: { global_status: "ready", total_targets: 1, ready_count: 1, failed_count: 0, blocked_count: 0, completed_at: "2026-07-16T07:20:00", targets: [] } }),
   runPreflight: vi.fn(),
-  cancelPreflight: vi.fn()
+  cancelPreflight: vi.fn(),
+  todayPlan: vi.fn().mockResolvedValue({ main_scheduled_time: "07:30", enabled_target_count: 0, completed_count: 0, pending_count: 0, blocked_count: 0, generated_at: "2026-07-16T07:00:00", estimated_finish: "2026-07-16T07:30", configuration_source: "current", targets: [] }),
+  failedTargets: vi.fn().mockResolvedValue({ summary: { success: 0, failed: 0, uncertain: 0, needs_attention: 0 }, items: [] }),
+  serviceIdentity: vi.fn().mockResolvedValue({ application: "AutoDy", version: "1.1.0", git_commit: "test", python_executable: "python.exe", package_path: "src/autody", project_path: "project", frontend_build_version: "1.1.0" })
 }));
 
 afterEach(() => {
@@ -50,7 +53,10 @@ vi.mock("./api", () => ({
     preflightLatest: apiMocks.preflightLatest,
     preflightStatus: apiMocks.preflightStatus,
     runPreflight: apiMocks.runPreflight,
-    cancelPreflight: apiMocks.cancelPreflight
+    cancelPreflight: apiMocks.cancelPreflight,
+    todayPlan: apiMocks.todayPlan,
+    failedTargets: apiMocks.failedTargets,
+    serviceIdentity: apiMocks.serviceIdentity
   }
 }));
 

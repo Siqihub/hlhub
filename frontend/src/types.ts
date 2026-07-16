@@ -259,6 +259,64 @@ export interface ConfiguredFriend {
   today_status: "success" | "failed" | "pending";
   last_success_date: string | null;
   ambiguous_duplicate?: boolean;
+  settings?: TargetEffectiveSettings;
+}
+
+export interface TargetEffectiveSettings {
+  message_source: string;
+  message_source_origin: "global" | "override";
+  suffix: string;
+  suffix_origin: "global" | "override";
+  message_selection: "one_for_all" | "per_friend";
+  message_selection_origin: "global" | "override";
+  delay_offset_minutes: number;
+  send_order: number | null;
+}
+
+export interface TodayPlan {
+  generated_at: string;
+  configuration_source: "current" | "cached";
+  main_scheduled_time: string;
+  enabled_target_count: number;
+  completed_count: number;
+  pending_count: number;
+  blocked_count: number;
+  estimated_finish: string;
+  targets: Array<TargetEffectiveSettings & {
+    target_id: string;
+    display_name: string;
+    planned_at: string;
+    status: "success" | "pending" | "failed" | "blocked";
+    blocked_reason: string | null;
+  }>;
+}
+
+export interface FailedTargetCenter {
+  summary: { success: number; failed: number; uncertain: number; needs_attention: number };
+  items: Array<{
+    target_id: string;
+    display_name: string;
+    failure_time: string;
+    trigger_source: string;
+    reason_code: string;
+    explanation: string;
+    no_send_action_definitely_occurred: boolean;
+    uncertain: boolean;
+    safe_retry_available: boolean;
+    latest_preflight_status: string | null;
+    latest_send_status: string;
+    resolved: boolean;
+  }>;
+}
+
+export interface ServiceIdentity {
+  application: string;
+  version: string;
+  git_commit: string | null;
+  python_executable: string;
+  package_path: string;
+  project_path: string;
+  frontend_build_version: string;
 }
 
 export interface PreflightTargetResult {

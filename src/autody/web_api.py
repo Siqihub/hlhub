@@ -1,7 +1,8 @@
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.utils import formatdate
 from io import BytesIO, StringIO
+from importlib.metadata import PackageNotFoundError, version
 import csv
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -30,7 +32,7 @@ from autody.config import (
 )
 from autody.account_profile import public_profile_payload
 from autody.friend_discovery import is_discovery_stale, load_discovered_friends
-from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, dashboard_statistics
+from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, dashboard_statistics, stable_target_id
 from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_storage_summary, log_summary, query_logs, record_cleanup_result
 from autody.message_packs import ImportMode, MessagePackError, MessagePackService
 from autody.messages import read_messages
@@ -50,6 +52,29 @@ from autody.transfer import (
     preview_backup,
 )
 from autody.web_actions import ActionAlreadyRunning, ActionManager
+
+
+def _application_version() -> str:
+    try:
+        return version("autody")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _git_commit(root: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=2,
+            check=False,
+        )
+    except OSError:
+        return None
+    return completed.stdout.strip() or None
 
 
 class ConfigUpdate(BaseModel):
@@ -112,6 +137,18 @@ class PreflightRunRequest(BaseModel):
     target_ids: list[str] | None = None
 
 
+class TargetSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    note: str | None = Field(default=None, max_length=120)
+    message_pack: str | None = Field(default=None, max_length=80)
+    suffix_mode: str | None = Field(default=None, pattern=r"^(global|disabled|custom)$")
+    suffix_override: str | None = Field(default=None, max_length=120)
+    delay_offset_minutes: int | None = Field(default=None, ge=0, le=30)
+    message_selection: str | None = Field(default=None, pattern=r"^(one_for_all|per_friend)$")
+    send_order: int | None = Field(default=None, ge=0)
+    reset_overrides: bool = False
+
+
 _SAFE_AVATAR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 _FALLBACK_AVATAR = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 48 48\" role=\"img\" aria-label=\"默认头像\"><circle cx=\"24\" cy=\"24\" r=\"24\" fill=\"#e6f0fc\"/><circle cx=\"24\" cy=\"18\" r=\"8\" fill=\"#7e9ec4\"/><path d=\"M10 42c2-9 8-14 14-14s12 5 14 14\" fill=\"#7e9ec4\"/></svg>""".encode("utf-8")
 
@@ -142,6 +179,168 @@ def _avatar_url(value: str | None, version: str | None = None) -> str:
 
 def _avatar_path(cache_dir: Path, identifier: str) -> Path:
     return cache_dir / f"{identifier}.png"
+
+
+def _target_id(target: Target) -> str:
+    return target.stable_id or target.candidate_id or stable_target_id(target.name)
+
+
+def _effective_target_settings(target: Target, config: AppConfig) -> dict:
+    if target.suffix_mode == "disabled":
+        suffix = "已禁用"
+    elif target.suffix_mode == "custom" and (target.suffix_override or "").strip():
+        suffix = target.suffix_override.strip()
+    else:
+        suffix = "全局后缀" if config.message_suffix.enabled else "未设置后缀"
+    return {
+        "message_source": target.message_pack or "全局本地文案库",
+        "message_source_origin": "override" if target.message_pack else "global",
+        "suffix": suffix,
+        "suffix_origin": "override" if target.suffix_mode != "global" else "global",
+        "message_selection": target.message_selection or config.message_selection,
+        "message_selection_origin": "override" if target.message_selection else "global",
+        "delay_offset_minutes": target.delay_offset_minutes,
+        "send_order": target.send_order,
+    }
+
+
+_SAFE_RETRY_CODES = {
+    "friend_not_found",
+    "login_required",
+    "browser_unavailable",
+    "browser_busy",
+    "conversation_open_failed",
+    "conversation_load_timeout",
+    "composer_missing",
+    "composer_hidden",
+    "composer_disabled",
+    "send_control_missing",
+    "send_failed_before_action",
+}
+
+_FAILURE_EXPLANATIONS = {
+    "friend_not_found": "未找到对应聊天，尚未触发发送。",
+    "login_required": "登录状态不可用，尚未触发发送。",
+    "browser_unavailable": "浏览器运行环境不可用，尚未触发发送。",
+    "browser_busy": "浏览器正在执行其他任务，尚未触发发送。",
+    "conversation_open_failed": "无法打开对应聊天，尚未触发发送。",
+    "conversation_load_timeout": "聊天页面加载超时，尚未触发发送。",
+    "composer_missing": "未找到消息输入区域，尚未触发发送。",
+    "composer_hidden": "消息输入区域不可见，尚未触发发送。",
+    "composer_disabled": "消息输入区域不可用，尚未触发发送。",
+    "send_control_missing": "未找到发送控件，尚未触发发送。",
+    "send_failed_before_action": "发送前准备失败，尚未触发发送。",
+    "confirmation_failed_uncertain": "发送结果不确定，为避免重复发送，已禁止自动重试。",
+    "blocked_ambiguous_target": "昵称存在歧义，已阻止自动发送。",
+    "page_structure_changed": "页面结构可能变化，已停止自动发送。",
+    "unexpected_error": "任务出现异常，请查看详细原因。",
+}
+
+
+def _failure_code(value: object, confirmation: object) -> str:
+    text = f"{value or ''} {confirmation or ''}".casefold()
+    if "confirmation" in text or "confirm" in text:
+        return "confirmation_failed_uncertain"
+    if "ambiguous" in text:
+        return "blocked_ambiguous_target"
+    for code in _SAFE_RETRY_CODES:
+        if code in text:
+            return code
+    if "not found" in text or "未找到" in text:
+        return "friend_not_found"
+    if "composer" in text:
+        return "composer_missing"
+    if "conversation" in text or "chat" in text:
+        return "conversation_open_failed"
+    if "login" in text or "登录" in text:
+        return "login_required"
+    return "unexpected_error"
+
+
+def _today_plan(config: AppConfig, state, day: date) -> dict:
+    daily = state.daily.get(day.isoformat(), {})
+    succeeded = set(daily.get("succeeded", []))
+    failures = daily.get("failures", {})
+    normalized: dict[str, int] = defaultdict(int)
+    for target in config.targets:
+        if target.enabled:
+            normalized[" ".join(target.name.split()).casefold()] += 1
+    base = datetime.combine(day, datetime.strptime(config.daily_send_time, "%H:%M").time())
+    enabled = [target for target in config.targets if target.enabled]
+    ordered = sorted(
+        enumerate(enabled),
+        key=lambda row: (row[1].send_order is None, row[1].send_order if row[1].send_order is not None else row[0], row[0]),
+    )
+    rows = []
+    blocked = 0
+    for fallback_order, target in ordered:
+        identity = _target_id(target)
+        ambiguous = normalized[" ".join(target.name.split()).casefold()] > 1
+        failure = failures.get(target.name)
+        code = _failure_code(failure, daily.get("confirmation_results", {}).get(identity)) if failure else None
+        status = "success" if target.name in succeeded else "blocked" if ambiguous or code == "blocked_ambiguous_target" else "failed" if failure else "pending"
+        if status == "blocked":
+            blocked += 1
+        settings = _effective_target_settings(target, config)
+        rows.append({
+            "target_id": identity,
+            "display_name": target.name,
+            "planned_at": (base + timedelta(minutes=target.delay_offset_minutes)).isoformat(timespec="minutes"),
+            "status": status,
+            "blocked_reason": "昵称存在歧义，已阻止自动发送。" if ambiguous else _FAILURE_EXPLANATIONS.get(code or "", None),
+            **settings,
+        })
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "configuration_source": "current",
+        "main_scheduled_time": config.daily_send_time,
+        "enabled_target_count": len(enabled),
+        "completed_count": sum(row["status"] == "success" for row in rows),
+        "pending_count": sum(row["status"] == "pending" for row in rows),
+        "blocked_count": blocked,
+        "estimated_finish": max((row["planned_at"] for row in rows), default=base.isoformat(timespec="minutes")),
+        "targets": rows,
+    }
+
+
+def _failed_targets(config: AppConfig, state, day: date) -> dict:
+    daily = state.daily.get(day.isoformat(), {})
+    succeeded = set(daily.get("succeeded", []))
+    failures = daily.get("failures", {})
+    confirmation = daily.get("confirmation_results", {})
+    rows = []
+    unresolved_codes = []
+    for target in config.targets:
+        if not target.enabled or target.name in succeeded or target.name not in failures:
+            continue
+        identity = _target_id(target)
+        code = _failure_code(failures.get(target.name), confirmation.get(identity))
+        unresolved_codes.append(code)
+        rows.append({
+            "target_id": identity,
+            "display_name": target.name,
+            "failure_time": f"{day.isoformat()}T{config.daily_send_time}:00",
+            "trigger_source": "retry" if daily.get("message") else "scheduled",
+            "reason_code": code,
+            "explanation": _FAILURE_EXPLANATIONS[code],
+            "no_send_action_definitely_occurred": code in _SAFE_RETRY_CODES,
+            "uncertain": code == "confirmation_failed_uncertain",
+            "latest_preflight_status": None,
+            "latest_send_status": confirmation.get(identity) or "failed_before_action",
+            "resolved": False,
+        })
+    shared_safe_retry = bool(rows) and all(code in _SAFE_RETRY_CODES for code in unresolved_codes)
+    for row in rows:
+        row["safe_retry_available"] = shared_safe_retry and row["no_send_action_definitely_occurred"]
+    return {
+        "items": rows,
+        "summary": {
+            "success": sum(target.name in succeeded for target in config.targets if target.enabled),
+            "failed": len(rows),
+            "uncertain": sum(row["uncertain"] for row in rows),
+            "needs_attention": len(rows),
+        },
+    }
 
 
 def _last_success_date(state, name: str) -> str | None:
@@ -373,6 +572,19 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             task_cache["expires"] = time.monotonic() + 10
         return list(task_cache["rows"])  # type: ignore[arg-type]
 
+    @app.get("/api/service-identity")
+    def service_identity():
+        package_path = Path(__file__).resolve().parent
+        return {
+            "application": "AutoDy",
+            "version": _application_version(),
+            "git_commit": _git_commit(root),
+            "python_executable": sys.executable,
+            "package_path": str(package_path),
+            "project_path": str(root),
+            "frontend_build_version": _application_version(),
+        }
+
     @app.get("/api/status")
     def status(today: str | None = None):
         config = load_config(config_path)
@@ -530,6 +742,40 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             "issues": issues,
             "statistics": statistics,
         }
+
+    @app.get("/api/today-plan")
+    def today_plan(today: str | None = None):
+        config = load_config(config_path)
+        try:
+            plan_day = date.fromisoformat(today) if today else date.today()
+        except ValueError as exc:
+            raise HTTPException(422, "日期格式应为 YYYY-MM-DD") from exc
+        return _today_plan(config, StateStore(config.state_file).load(), plan_day)
+
+    @app.get("/api/failed-targets")
+    def failed_targets(today: str | None = None):
+        config = load_config(config_path)
+        try:
+            failure_day = date.fromisoformat(today) if today else date.today()
+        except ValueError as exc:
+            raise HTTPException(422, "日期格式应为 YYYY-MM-DD") from exc
+        return _failed_targets(config, StateStore(config.state_file).load(), failure_day)
+
+    @app.post("/api/failed-targets/{target_id}/retry", status_code=202)
+    def retry_failed_target(target_id: str, today: str | None = None):
+        config = load_config(config_path)
+        try:
+            failure_day = date.fromisoformat(today) if today else date.today()
+        except ValueError as exc:
+            raise HTTPException(422, "日期格式应为 YYYY-MM-DD") from exc
+        failures = _failed_targets(config, StateStore(config.state_file).load(), failure_day)
+        target = next((item for item in failures["items"] if item["target_id"] == target_id), None)
+        if not target or not target["safe_retry_available"]:
+            raise HTTPException(409, "该目标的发送结果不确定或未满足安全重试条件，已禁止自动重试。")
+        try:
+            return run_action("run")
+        except ActionAlreadyRunning as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/account-profile")
     def account_profile():
@@ -890,9 +1136,40 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "today_status": "success" if target.name in succeeded else "failed" if target.name in failures else "pending",
                     "last_success_date": _last_success_date(state, target.name),
                     "ambiguous_duplicate": target.enabled and normalized_names[" ".join(target.name.split()).casefold()] > 1,
+                    "settings": _effective_target_settings(target, config),
                 }
             )
         return {"friends": friends}
+
+    @app.put("/api/friends/{target_id}/settings")
+    def update_target_settings(target_id: str, payload: TargetSettingsUpdate):
+        config = load_config(config_path)
+        target = next((item for item in config.targets if _target_id(item) == target_id), None)
+        if target is None:
+            raise HTTPException(404, "续火目标不存在")
+        if payload.reset_overrides:
+            target.message_pack = None
+            target.suffix_mode = "global"
+            target.suffix_override = None
+            target.delay_offset_minutes = 0
+            target.message_selection = None
+            target.send_order = None
+        else:
+            values = payload.model_dump(exclude={"reset_overrides"}, exclude_none=True)
+            if values.get("message_pack"):
+                try:
+                    ids = {pack.id for pack in MessagePackService(root, config.message_pack_index_url).list_packs().packs}
+                except MessagePackError as exc:
+                    raise HTTPException(422, str(exc)) from exc
+                if values["message_pack"] not in ids:
+                    raise HTTPException(422, "选择的文案包不存在")
+            for field_name, value in values.items():
+                setattr(target, field_name, value)
+            if target.suffix_mode == "custom" and not (target.suffix_override or "").strip():
+                raise HTTPException(422, "自定义后缀不能为空")
+        config = AppConfig.model_validate(config.model_dump())
+        save_config(config_path, config)
+        return {"target_id": _target_id(target), "settings": _effective_target_settings(target, config)}
 
     @app.post("/api/friends/discovered/batch")
     def add_discovered_friends(payload: DiscoveredFriendBatchAdd):

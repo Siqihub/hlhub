@@ -10,7 +10,11 @@ import type {
   PackImportResult,
   PackPreview,
   SchedulePreview,
-  ScheduleSettings
+  ScheduleSettings,
+  ServiceIdentity,
+  TodayPlan,
+  FailedTargetCenter,
+  TargetEffectiveSettings
 } from "./types";
 
 type ActionJob = {
@@ -34,6 +38,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   status: () => request<DashboardStatus>("/api/status"),
+  serviceIdentity: () => request<ServiceIdentity>("/api/service-identity"),
+  todayPlan: () => request<TodayPlan>("/api/today-plan"),
+  failedTargets: () => request<FailedTargetCenter>("/api/failed-targets"),
+  retryFailedTarget: (targetId: string) => request<ActionJob>(`/api/failed-targets/${encodeURIComponent(targetId)}/retry`, { method: "POST", body: JSON.stringify({}) }),
   accountProfile: () => request<AccountProfile>("/api/account-profile"),
   refreshAccountProfile: () => request<AccountProfile & { job?: ActionJob }>("/api/account-profile/refresh", { method: "POST" }),
   config: () => request<AppConfig>("/api/config"),
@@ -120,6 +128,8 @@ export const api = {
     return response.blob();
   },
   friendBatch: (targetIds: string[], action: "enable" | "disable" | "delete") => request<{ affected: number }>("/api/friends/batch", { method: "PATCH", body: JSON.stringify({ target_ids: targetIds, action }) }),
+  saveTargetSettings: (targetId: string, settings: Record<string, unknown>) =>
+    request<{ target_id: string; settings: TargetEffectiveSettings }>(`/api/friends/${encodeURIComponent(targetId)}/settings`, { method: "PUT", body: JSON.stringify(settings) }),
   previewMessageImport: (file: File) => upload<{ total_entries: number; valid_entries: number; exact_duplicates: number; empty_entries: number; overly_long_entries: number; entries_with_links: number }>("/api/messages/import/preview", file),
   importMessages: (file: File, mode: "merge" | "replace") => upload<{ imported: number; duplicated: number; total: number }>(`/api/messages/import?mode=${mode}`, file),
   deduplicateMessages: () => request<{ removed: number }>("/api/messages/deduplicate", { method: "POST" })

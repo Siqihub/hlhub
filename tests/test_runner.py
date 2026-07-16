@@ -110,6 +110,28 @@ def test_suffix_is_send_only_and_state_tracks_base_message(tmp_path: Path):
     assert config.messages_file.read_text(encoding="utf-8") == original
 
 
+def test_target_overrides_apply_pack_and_explicit_suffix_without_changing_global_defaults(tmp_path: Path):
+    config, chat = make_config(tmp_path), FakeChat()
+    pack_dir = tmp_path / "message-packs"
+    pack_dir.mkdir()
+    (pack_dir / "special.txt").write_text("专属问候\n", encoding="utf-8")
+    (pack_dir / "index.json").write_text(
+        '{"packs":[{"id":"special","name":"测试包","description":"","version":"1","file":"special.txt","relative_url":"special.txt","raw_url":null,"count":1,"category":"test"}]}',
+        encoding="utf-8",
+    )
+    config.targets[0].message_pack = "special"
+    config.targets[0].suffix_mode = "custom"
+    config.targets[0].suffix_override = "专属后缀"
+    config.targets[1].suffix_mode = "disabled"
+
+    result = run_daily(config, chat, date(2026, 7, 15))
+
+    assert result.status is RunStatus.COMPLETED
+    assert chat.sent[0] == ("小明", "专属问候 —— 专属后缀")
+    assert chat.sent[1][1] in {"早安", "晚安"}
+    assert config.message_suffix.text == "gpt小助手"
+
+
 def test_confirmation_failure_is_not_recorded_as_success_and_retry_does_not_duplicate(tmp_path: Path):
     config = make_config(tmp_path)
     config.retry_count = 2

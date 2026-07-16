@@ -7,8 +7,9 @@ import random
 import time
 
 from autody.chat import DeliveryResult, DeliveryStatus, FatalChatError
-from autody.config import AppConfig
+from autody.config import AppConfig, MessageSuffixConfig, Target
 from autody.history import TaskHistoryStore, TaskRunRecord, stable_target_id
+from autody.message_packs import MessagePackError, MessagePackService
 from autody.messages import MessageRotation, format_message_with_suffix, read_messages
 from autody.state import StateStore
 
@@ -45,6 +46,37 @@ def _delivery_result(value) -> DeliveryResult:
     if isinstance(value, DeliveryResult):
         return value
     return DeliveryResult(DeliveryStatus.CONFIRMED, send_attempts=1, confirmation_attempts=1)
+
+
+def _target_suffix(target: Target, config: AppConfig) -> MessageSuffixConfig:
+    if target.suffix_mode == "disabled":
+        return MessageSuffixConfig(enabled=False)
+    if target.suffix_mode == "custom" and (target.suffix_override or "").strip():
+        return MessageSuffixConfig(
+            enabled=True,
+            text=target.suffix_override.strip(),
+            style=config.message_suffix.style,
+        )
+    return config.message_suffix
+
+
+def _target_base_message(
+    target: Target,
+    config: AppConfig,
+    daily: dict,
+    messages: list[str],
+) -> str:
+    if not target.message_pack:
+        return daily["message"]
+    target_id = target.stable_id or target.candidate_id or stable_target_id(target.name)
+    key = f"pack:{target_id}"
+    cached = daily.setdefault("messages_by_target", {}).get(key)
+    if cached:
+        return cached
+    pack_messages = MessagePackService(config.messages_file.parent, config.message_pack_index_url).preview(target.message_pack).messages
+    selected = random.SystemRandom().choice(pack_messages) if (target.message_selection or config.message_selection) == "per_friend" else pack_messages[0]
+    daily["messages_by_target"][key] = selected
+    return selected
 
 
 def _record_history(
@@ -123,7 +155,7 @@ def run_daily(
     for target in ambiguous_targets:
         daily["failures"][target.name] = "blocked_ambiguous_target"
     pending = [
-        target.name for target in targets
+        target for target in targets
         if target.name not in daily["succeeded"]
         and " ".join(target.name.split()).casefold() not in ambiguous_names
     ]
@@ -142,29 +174,43 @@ def run_daily(
     if not daily["message"]:
         daily["message"] = rotation.peek(messages, state.rotation)
         store.save(state)
-    outgoing_message = format_message_with_suffix(daily["message"], config.message_suffix)
     daily.setdefault("messages_by_target", {})
 
     sent = 0
     retries = 0
     confirmation_results: dict[str, str] = {}
     blocked_error: str | None = None
+    run_started = time.monotonic()
     for target_index, target in enumerate(pending):
-        target_message = outgoing_message
-        if config.message_selection == "per_friend":
-            base = daily["messages_by_target"].get(target)
+        target_name = target.name
+        remaining = target.delay_offset_minutes * 60 - (time.monotonic() - run_started)
+        if remaining > 0:
+            time.sleep(remaining)
+        if target.message_pack:
+            try:
+                base = _target_base_message(target, config, daily, messages)
+            except MessagePackError as exc:
+                daily["failures"][target_name] = "send_failed_before_action"
+                logger.warning("目标文案包不可用：%s：%s", target_name, exc)
+                store.save(state)
+                continue
+            target_message = format_message_with_suffix(base, _target_suffix(target, config))
+        elif (target.message_selection or config.message_selection) == "per_friend":
+            base = daily["messages_by_target"].get(target_name)
             if not base:
                 base = random.SystemRandom().choice(messages)
-                daily["messages_by_target"][target] = base
+                daily["messages_by_target"][target_name] = base
                 store.save(state)
-            target_message = format_message_with_suffix(base, config.message_suffix)
-        target_id = stable_target_id(target)
+            target_message = format_message_with_suffix(base, _target_suffix(target, config))
+        else:
+            target_message = format_message_with_suffix(daily["message"], _target_suffix(target, config))
+        target_id = target.stable_id or target.candidate_id or stable_target_id(target_name)
         error = None
         for attempt in range(config.retry_count):
             if attempt:
                 retries += 1
             try:
-                delivery = _delivery_result(chat.send(target, target_message))
+                delivery = _delivery_result(chat.send(target_name, target_message))
             except FatalChatError as exc:
                 delivery = DeliveryResult(DeliveryStatus.BLOCKED, error=str(exc))
             except RuntimeError as exc:
@@ -173,11 +219,11 @@ def run_daily(
             daily["confirmation_results"][target_id] = delivery.status.value
             retries += max(0, delivery.confirmation_attempts - 1)
             if delivery.successful:
-                daily["succeeded"].append(target)
-                daily["failures"].pop(target, None)
+                daily["succeeded"].append(target_name)
+                daily["failures"].pop(target_name, None)
                 sent += 1
                 error = None
-                logger.info("发送已确认：%s（%s）", target, delivery.status.value)
+                logger.info("发送已确认：%s（%s）", target_name, delivery.status.value)
                 break
             error = delivery.error or delivery.status.value
             if delivery.status is DeliveryStatus.BLOCKED:
@@ -190,7 +236,7 @@ def run_daily(
                 break
             logger.warning(
                 "发送未确认：%s（第 %s/%s 次，%s）：%s",
-                target,
+                target_name,
                 attempt + 1,
                 config.retry_count,
                 delivery.status.value,
@@ -199,7 +245,7 @@ def run_daily(
             if attempt + 1 < config.retry_count:
                 time.sleep(random.uniform(1, 3))
         if error:
-            daily["failures"][target] = error
+            daily["failures"][target_name] = error
         store.save(state)
         if blocked_error:
             break

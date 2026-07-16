@@ -1,4 +1,4 @@
-import { Check, Radar, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Radar, RefreshCw, Settings2, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { AppConfig, ConfiguredFriend, FriendDiscovery, PreflightResult } from "../types";
@@ -32,6 +32,8 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
   const [busyAction, setBusyAction] = useState<"scan" | "avatar" | null>(null);
   const [addingCandidateId, setAddingCandidateId] = useState<string | null>(null);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
+  const [editingFriend, setEditingFriend] = useState<ConfiguredFriend | null>(null);
+  const [targetForm, setTargetForm] = useState({ enabled: true, note: "", message_pack: "", suffix_mode: "global", suffix_override: "", delay_offset_minutes: 0, message_selection: "", send_order: "" });
   const refreshWasRunning = useRef(false);
 
   const load = async () => {
@@ -157,6 +159,38 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
       notify("发送前自检已完成");
     } catch (error) { notify(error instanceof Error ? error.message : "发送前自检启动失败"); }
   };
+  const openTargetSettings = (friend: ConfiguredFriend) => {
+    setEditingFriend(friend);
+    setTargetForm({
+      enabled: friend.enabled,
+      note: friend.note || "",
+      message_pack: friend.settings?.message_source_origin === "override" ? friend.settings.message_source : "",
+      suffix_mode: friend.settings?.suffix_origin === "override" ? (friend.settings.suffix === "已禁用" ? "disabled" : "custom") : "global",
+      suffix_override: friend.settings?.suffix_origin === "override" && friend.settings.suffix !== "已禁用" ? friend.settings.suffix : "",
+      delay_offset_minutes: friend.settings?.delay_offset_minutes ?? 0,
+      message_selection: friend.settings?.message_selection_origin === "override" ? friend.settings.message_selection : "",
+      send_order: friend.settings?.send_order?.toString() ?? ""
+    });
+  };
+  const saveTargetSettings = async () => {
+    const targetId = editingFriend?.target_id || editingFriend?.id;
+    if (!targetId) return;
+    try {
+      await api.saveTargetSettings(targetId, {
+        enabled: targetForm.enabled,
+        note: targetForm.note,
+        message_pack: targetForm.message_pack || null,
+        suffix_mode: targetForm.suffix_mode,
+        suffix_override: targetForm.suffix_mode === "custom" ? targetForm.suffix_override : null,
+        delay_offset_minutes: Number(targetForm.delay_offset_minutes),
+        message_selection: targetForm.message_selection || null,
+        send_order: targetForm.send_order === "" ? null : Number(targetForm.send_order)
+      });
+      setEditingFriend(null);
+      await load();
+      notify("目标设置已保存");
+    } catch (error) { notify(error instanceof Error ? error.message : "目标设置保存失败"); }
+  };
 
   return (
     <section className="editor-page">
@@ -186,6 +220,7 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
                 <small><span className={friend.enabled ? "target-status" : "target-status paused"}>{friend.enabled ? "已启用" : "已停用"}</span>{todayLabel(friend.today_status)}{preflightRow ? ` · ${preflightRow.user_message}` : " · 未检测"}{friend.last_success_date ? ` · 最近成功：${friend.last_success_date}` : ""}</small>
               </div>
               {friend.enabled ? <button className="text-button target-preflight" onClick={(event) => { event.stopPropagation(); void checkTarget(targetId); }}>测试可发送状态</button> : null}
+              <button className="icon-button" aria-label={`编辑目标设置 ${friend.display_name}`} onClick={(event) => { event.stopPropagation(); openTargetSettings(friend); }}><Settings2 size={17} /></button>
               {selected ? <span className="selection-indicator" aria-label="已选择"><Check size={13} /></span> : null}
               <button className="icon-button danger" aria-label={`删除 ${friend.display_name}`} onClick={(event) => { event.stopPropagation(); void api.friendBatch([targetId], "delete").then(load); }}><Trash2 size={17} /></button>
             </div>;
@@ -208,6 +243,18 @@ export function FriendsPage({ notify }: { notify: (message: string) => void }) {
           </button>;
         })}</div>
       </section> : null}
+      {editingFriend ? <div className="modal-backdrop" role="presentation"><section className="modal-card" role="dialog" aria-label="编辑目标设置">
+        <div className="panel-heading"><h2>编辑目标设置</h2><button className="text-button" onClick={() => setEditingFriend(null)}>关闭</button></div>
+        <label><input type="checkbox" checked={targetForm.enabled} onChange={(event) => setTargetForm({ ...targetForm, enabled: event.target.checked })} /> 启用此目标</label>
+        <label>备注<input value={targetForm.note} maxLength={120} onChange={(event) => setTargetForm({ ...targetForm, note: event.target.value })} /></label>
+        <label>文案包（留空使用全局）<input value={targetForm.message_pack} onChange={(event) => setTargetForm({ ...targetForm, message_pack: event.target.value })} /></label>
+        <label>后缀<select value={targetForm.suffix_mode} onChange={(event) => setTargetForm({ ...targetForm, suffix_mode: event.target.value })}><option value="global">使用全局后缀</option><option value="disabled">不使用后缀</option><option value="custom">自定义后缀</option></select></label>
+        {targetForm.suffix_mode === "custom" ? <label>自定义后缀<input value={targetForm.suffix_override} onChange={(event) => setTargetForm({ ...targetForm, suffix_override: event.target.value })} /></label> : null}
+        <label>延迟分钟<input aria-label="延迟分钟" type="number" min="0" max="30" value={targetForm.delay_offset_minutes} onChange={(event) => setTargetForm({ ...targetForm, delay_offset_minutes: Number(event.target.value) })} /></label>
+        <label>文案选择<select value={targetForm.message_selection} onChange={(event) => setTargetForm({ ...targetForm, message_selection: event.target.value })}><option value="">使用全局设置</option><option value="one_for_all">统一文案</option><option value="per_friend">按目标选择</option></select></label>
+        <label>发送顺序（留空按全局）<input type="number" min="0" value={targetForm.send_order} onChange={(event) => setTargetForm({ ...targetForm, send_order: event.target.value })} /></label>
+        <div className="inline-actions"><button className="text-button" onClick={() => { const targetId = editingFriend.target_id || editingFriend.id; if (targetId) void api.saveTargetSettings(targetId, { reset_overrides: true }).then(() => { setEditingFriend(null); void load(); }); }}>恢复全局默认</button><button className="action-button primary" onClick={() => void saveTargetSettings()}>保存目标设置</button></div>
+      </section></div> : null}
     </section>
   );
 }

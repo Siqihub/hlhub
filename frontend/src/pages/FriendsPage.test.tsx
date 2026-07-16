@@ -13,7 +13,8 @@ const apiMocks = vi.hoisted(() => ({
   friendBatch: vi.fn(),
   saveConfig: vi.fn(),
   preflightLatest: vi.fn(),
-  runPreflight: vi.fn()
+  runPreflight: vi.fn(),
+  saveTargetSettings: vi.fn()
 }));
 
 vi.mock("../api", () => ({ api: apiMocks }));
@@ -74,6 +75,7 @@ beforeEach(() => {
   apiMocks.saveConfig.mockResolvedValue(config);
   apiMocks.preflightLatest.mockResolvedValue({ result: null });
   apiMocks.runPreflight.mockResolvedValue({ id: "preflight-1", action: "preflight", status: "running" });
+  apiMocks.saveTargetSettings.mockResolvedValue({ target_id: "friend-xiaoming", settings: { message_source: "全局本地文案库", suffix: "已禁用", delay_offset_minutes: 0 } });
 });
 
 afterEach(() => {
@@ -144,5 +146,18 @@ test("runs a single-target preflight without changing target selection", async (
   fireEvent.click(screen.getByRole("button", { name: "测试可发送状态" }));
 
   await waitFor(() => expect(apiMocks.runPreflight).toHaveBeenCalledWith(["friend-xiaoming"]));
+  expect(checkbox).not.toBeChecked();
+});
+
+test("edits configured-target settings without toggling the target card", async () => {
+  render(<FriendsPage notify={vi.fn()} />);
+
+  const checkbox = await screen.findByRole("checkbox", { name: "选择 小明" });
+  fireEvent.click(screen.getByRole("button", { name: "编辑目标设置 小明" }));
+  expect(checkbox).not.toBeChecked();
+  fireEvent.change(screen.getByLabelText("延迟分钟"), { target: { value: "12" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存目标设置" }));
+
+  await waitFor(() => expect(apiMocks.saveTargetSettings).toHaveBeenCalledWith("friend-xiaoming", expect.objectContaining({ delay_offset_minutes: 12 })));
   expect(checkbox).not.toBeChecked();
 });

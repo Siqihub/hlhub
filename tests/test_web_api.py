@@ -86,6 +86,21 @@ def test_status_returns_dashboard_summary(tmp_path: Path):
     assert data["login"]["status"] == "unknown"
 
 
+def test_service_identity_reports_local_runtime_without_private_browser_data(tmp_path: Path):
+    client = TestClient(create_app(make_project(tmp_path)))
+
+    response = client.get("/api/service-identity")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["application"] == "AutoDy"
+    assert data["version"]
+    assert data["python_executable"]
+    assert data["package_path"].endswith("src\\autody") or data["package_path"].endswith("src/autody")
+    assert "cookie" not in str(data).lower()
+    assert "browser-profile" not in str(data).lower()
+
+
 def test_status_reports_latest_login_health_result(tmp_path: Path):
     config = make_project(tmp_path)
     log = tmp_path / "data" / "logs" / "autody.log"
@@ -150,6 +165,67 @@ def test_preflight_routes_validate_target_ids_and_return_masked_persistence(tmp_
     request = json.loads((tmp_path / "data" / "preflight" / "request.json").read_text(encoding="utf-8"))
     assert request == {"target_ids": ["target-one"]}
     assert client.post("/api/preflight/cancel").json() == {"cancelled": True}
+
+
+def test_target_settings_and_today_plan_are_read_only(tmp_path: Path):
+    config_path = make_project(tmp_path)
+    config = load_config(config_path)
+    config.targets[0].stable_id = "target-one"
+    config.targets[1].stable_id = "target-two"
+    save_config(config_path, config)
+    before = (tmp_path / "data" / "state.json").read_bytes()
+    client = TestClient(create_app(config_path))
+
+    updated = client.put(
+        "/api/friends/target-one/settings",
+        json={
+            "message_pack": "daily",
+            "suffix_mode": "disabled",
+            "delay_offset_minutes": 12,
+            "message_selection": "per_friend",
+            "send_order": 3,
+            "note": "测试备注",
+        },
+    )
+    plan = client.get("/api/today-plan?today=2026-06-24")
+
+    assert updated.status_code == 200
+    assert updated.json()["settings"]["delay_offset_minutes"] == 12
+    assert load_config(config_path).targets[1].delay_offset_minutes == 0
+    assert plan.status_code == 200
+    first = next(item for item in plan.json()["targets"] if item["target_id"] == "target-one")
+    assert first["planned_at"].endswith("07:42")
+    assert first["message_source"] == "daily"
+    assert first["suffix"] == "已禁用"
+    assert (tmp_path / "data" / "state.json").read_bytes() == before
+
+
+def test_failed_target_center_blocks_uncertain_retry_and_allows_definitely_unsent(tmp_path: Path):
+    config_path = make_project(tmp_path)
+    config = load_config(config_path)
+    config.targets[0].stable_id = "target-one"
+    config.targets[1].stable_id = "target-two"
+    save_config(config_path, config)
+    state_path = tmp_path / "data" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    daily = state["daily"]["2026-06-24"]
+    daily["succeeded"] = []
+    daily["failures"] = {"小明": "composer_missing", "小红": "confirmation_failed_uncertain"}
+    daily["confirmation_results"] = {"target-two": "confirmation_failed"}
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    started: list[str] = []
+    client = TestClient(create_app(config_path, action_runner=lambda action: started.append(action) or {"id": "job", "status": "running"}))
+
+    data = client.get("/api/failed-targets?today=2026-06-24").json()
+    uncertain = next(item for item in data["items"] if item["target_id"] == "target-two")
+    safe = next(item for item in data["items"] if item["target_id"] == "target-one")
+
+    assert data["summary"] == {"success": 0, "failed": 2, "uncertain": 1, "needs_attention": 2}
+    assert uncertain["safe_retry_available"] is False
+    assert uncertain["no_send_action_definitely_occurred"] is False
+    assert safe["safe_retry_available"] is False  # an uncertain peer blocks the shared protected run
+    assert client.post("/api/failed-targets/target-two/retry", json={}).status_code == 409
+    assert started == []
 
 
 def test_preflight_status_exposes_masked_progress(tmp_path: Path):
