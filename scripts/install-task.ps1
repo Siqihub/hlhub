@@ -13,9 +13,9 @@ param(
 $ErrorActionPreference = "Stop"
 $TaskName = "AutoDy-DailySpark"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$Exe = Join-Path $Root ".venv\Scripts\autody.exe"
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
 
-if (-not (Test-Path $Exe)) { throw "Missing $Exe. Create .venv and install the project first." }
+if (-not (Test-Path $Python)) { throw "Missing $Python. Create .venv and install the project first." }
 if (-not (Test-Path (Join-Path $Root "config.yaml"))) { throw "Missing config.yaml. Copy and edit config.example.yaml first." }
 
 $PowerShell = (Get-Command powershell.exe).Source

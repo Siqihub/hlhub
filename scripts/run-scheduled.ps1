@@ -4,7 +4,7 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $env:AUTODY_HOME = $Root
 $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $Root "data\ms-playwright"
 $env:PLAYWRIGHT_SKIP_BROWSER_GC = "1"
-$Exe = Join-Path $Root ".venv\Scripts\autody.exe"
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
 $Config = Join-Path $Root "config.yaml"
 $LogDir = Join-Path $Root "data\logs"
 $Log = Join-Path $LogDir "scheduler.log"
@@ -19,8 +19,8 @@ $started = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 $stdout = Join-Path $env:TEMP "autody-run-stdout-$PID.log"
 $stderr = Join-Path $env:TEMP "autody-run-stderr-$PID.log"
 $process = Start-Process `
-    -FilePath $Exe `
-    -ArgumentList @("run", "--config", "`"$Config`"", "--source", "scheduled") `
+    -FilePath $Python `
+    -ArgumentList @("-m", "autody.cli", "run", "--config", "`"$Config`"", "--source", "scheduled") `
     -WorkingDirectory $Root `
     -Wait `
     -PassThru `

@@ -4,7 +4,7 @@ for %%I in ("%~dp0..") do set "AUTODY_HOME=%%~fI"
 set "PLAYWRIGHT_BROWSERS_PATH=%AUTODY_HOME%\data\ms-playwright"
 set "PLAYWRIGHT_SKIP_BROWSER_GC=1"
 
-if not exist "%AUTODY_HOME%\.venv\Scripts\autody.exe" (
+if not exist "%AUTODY_HOME%\.venv\Scripts\python.exe" (
   echo AutoDy 运行环境不存在，请先运行 install.cmd 完成安装或修复。
   pause
   exit /b 1
@@ -17,4 +17,4 @@ if not exist "%AUTODY_HOME%\config.yaml" (
 )
 
 cd /d "%AUTODY_HOME%"
-start "" "%AUTODY_HOME%\.venv\Scripts\autody.exe" ui --config "%AUTODY_HOME%\config.yaml"
+start "" "%AUTODY_HOME%\.venv\Scripts\python.exe" -m autody.cli ui --config "%AUTODY_HOME%\config.yaml"

@@ -7,7 +7,7 @@ def test_install_script_has_required_scheduler_contract():
         "07:30",
         "StartWhenAvailable",
         "IgnoreNew",
-        "autody.exe",
+        ".venv\\Scripts\\python.exe",
         "Register-ScheduledTask",
         "-ErrorAction Stop",
         "Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop",
@@ -51,3 +51,11 @@ def test_every_scheduled_task_uses_ignore_new_policy():
     text = Path("scripts/install-task.ps1").read_text(encoding="utf-8-sig")
     assert "-MultipleInstances IgnoreNew" in text
     assert text.count("-Settings $Settings") == 3
+
+
+def test_source_launchers_use_project_local_python_not_console_entrypoint():
+    for path in [Path("scripts/start-dashboard.cmd"), Path("scripts/run-scheduled.ps1"), Path("scripts/health-check.ps1")]:
+        text = path.read_text(encoding="utf-8-sig")
+        assert ".venv\\Scripts\\python.exe" in text
+        assert "autody.cli" in text
+    assert ".venv\\Scripts\\python.exe" in Path("scripts/install-task.ps1").read_text(encoding="utf-8-sig")

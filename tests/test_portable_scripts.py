@@ -37,7 +37,8 @@ def test_dashboard_launcher_and_shortcut_are_portable_and_use_icon():
         "AUTODY_HOME",
         "PLAYWRIGHT_BROWSERS_PATH",
         "PLAYWRIGHT_SKIP_BROWSER_GC",
-        ".venv\\Scripts\\autody.exe",
+        ".venv\\Scripts\\python.exe",
+        "-m autody.cli",
         "请先运行 install.cmd",
     ]:
         assert token in launcher
@@ -69,6 +70,8 @@ def test_portable_builder_excludes_sensitive_data():
     for token in [".venv", "browser-profile", "avatar-cache", "discovered_friends", "account-profile", "account-avatar", "config.yaml", "data", "node_modules"]:
         assert token in text
     assert "Compress-Archive" in text
+    assert "AutoDy-Windows-Portable.zip.sha256" in text
+    assert "Get-FileHash" in text
     assert "data/avatar-cache/" in Path(".gitignore").read_text(encoding="utf-8")
     assert "data/discovered_friends.json" in Path(".gitignore").read_text(encoding="utf-8")
     assert "data/account-profile.json" in Path(".gitignore").read_text(encoding="utf-8")
