@@ -34,6 +34,7 @@ from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, das
 from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_storage_summary, log_summary, query_logs, record_cleanup_result
 from autody.message_packs import ImportMode, MessagePackError, MessagePackService
 from autody.messages import read_messages
+from autody.preflight import PreflightStore
 from autody.recovery import recovery_due
 from autody.state import StateStore
 from autody.scheduler import ScheduleSettings, SchedulerService
@@ -73,6 +74,7 @@ class ConfigUpdate(BaseModel):
     friend_order: str = Field(default="configured", pattern=r"^(configured|randomized)$")
     message_selection: str = Field(default="one_for_all", pattern=r"^(one_for_all|per_friend)$")
     completion_notifications_enabled: bool = True
+    preflight_after_health_enabled: bool = True
     log_retention_days: int = Field(default=30, ge=7, le=3650)
     log_cleanup_enabled: bool = True
     active_log_retention_days: int = Field(default=14, ge=3, le=3650)
@@ -104,6 +106,10 @@ class FriendBatchUpdate(BaseModel):
 
 class DiscoveredFriendBatchAdd(BaseModel):
     candidate_ids: list[str] = Field(default_factory=list)
+
+
+class PreflightRunRequest(BaseModel):
+    target_ids: list[str] | None = None
 
 
 _SAFE_AVATAR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
@@ -200,6 +206,7 @@ def _config_payload(config: AppConfig) -> dict:
         "friend_order": config.friend_order,
         "message_selection": config.message_selection,
         "completion_notifications_enabled": config.completion_notifications_enabled,
+        "preflight_after_health_enabled": config.preflight_after_health_enabled,
         "log_retention_days": config.log_retention_days,
         "log_cleanup_enabled": config.log_cleanup_enabled,
         "active_log_retention_days": config.active_log_retention_days,
@@ -282,6 +289,7 @@ def _portable_config(config_path: Path, config: AppConfig) -> bytes:
         "friend_order": config.friend_order,
         "message_selection": config.message_selection,
         "completion_notifications_enabled": config.completion_notifications_enabled,
+        "preflight_after_health_enabled": config.preflight_after_health_enabled,
         "log_retention_days": config.log_retention_days,
         "log_cleanup_enabled": config.log_cleanup_enabled,
         "active_log_retention_days": config.active_log_retention_days,
@@ -311,6 +319,18 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         "running": False,
         "last_attempt": 0.0,
     }
+    preflight_job_id: str | None = None
+
+    def preflight_payload(config: AppConfig, result: dict | None) -> dict:
+        if not result:
+            return {"result": None}
+        names = {target.stable_id or target.candidate_id: target.name for target in config.targets}
+        safe = dict(result)
+        safe["targets"] = [
+            {**row, "display_name": names.get(row.get("target_id"), "已移除目标")}
+            for row in result.get("targets", [])
+        ]
+        return {"result": safe}
 
     def refresh_running() -> bool:
         with discovery_refresh_lock:
@@ -1172,6 +1192,57 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
         restored = load_config(config_path)
         return {**result, "targets": [target.name for target in restored.targets], "messages": _message_count(restored.messages_file)}
 
+    @app.get("/api/preflight/latest")
+    def preflight_latest():
+        config = load_config(config_path)
+        return preflight_payload(config, PreflightStore(config.state_file.parent / "preflight").load_latest())
+
+    @app.get("/api/preflight/history")
+    def preflight_history():
+        config = load_config(config_path)
+        rows = PreflightStore(config.state_file.parent / "preflight").history()
+        return {"items": [preflight_payload(config, row)["result"] for row in rows[-30:]]}
+
+    @app.get("/api/preflight/status")
+    def preflight_status():
+        nonlocal preflight_job_id
+        job = manager.get(preflight_job_id) if preflight_job_id else None
+        config = load_config(config_path)
+        store = PreflightStore(config.state_file.parent / "preflight")
+        return {
+            "running": bool(job and job["status"] == "running"),
+            "job": job,
+            "progress": store.load_progress(),
+            **preflight_payload(config, store.load_latest()),
+        }
+
+    @app.post("/api/preflight/run", status_code=202)
+    def preflight_run(payload: PreflightRunRequest):
+        nonlocal preflight_job_id
+        config = load_config(config_path)
+        valid_ids = {target.stable_id or target.candidate_id for target in config.targets if target.enabled}
+        if payload.target_ids is not None and (not payload.target_ids or any(item not in valid_ids for item in payload.target_ids)):
+            raise HTTPException(422, "续火目标无效或已停用")
+        request_path = config.state_file.parent / "preflight" / "request.json"
+        request_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = request_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"target_ids": payload.target_ids}, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, request_path)
+        try:
+            job = run_action("preflight")
+        except ActionAlreadyRunning as exc:
+            raise HTTPException(409, str(exc)) from exc
+        preflight_job_id = str(job["id"])
+        return job
+
+    @app.post("/api/preflight/cancel")
+    def preflight_cancel():
+        config = load_config(config_path)
+        path = config.state_file.parent / "preflight" / "cancel.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"requested_at": datetime.now().isoformat()}), encoding="utf-8")
+        return {"cancelled": True}
+
     @app.post("/api/actions/{action}", status_code=202)
     def action(action: str):
         if action not in {
@@ -1182,6 +1253,7 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             "refresh-friend-avatars",
             "repair-playwright",
             "refresh-account-profile",
+            "preflight",
             "install-scheduler",
             "remove-scheduler",
         }:

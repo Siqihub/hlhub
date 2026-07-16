@@ -56,6 +56,7 @@ class AppConfig(BaseModel):
     friend_order: str = Field(default="configured", pattern=r"^(configured|randomized)$")
     message_selection: str = Field(default="one_for_all", pattern=r"^(one_for_all|per_friend)$")
     completion_notifications_enabled: bool = True
+    preflight_after_health_enabled: bool = True
     log_retention_days: int = Field(default=30, ge=7, le=3650)
     log_cleanup_enabled: bool = True
     active_log_retention_days: int = Field(default=14, ge=3, le=3650)
@@ -136,6 +137,7 @@ def save_config(path: Path, config: AppConfig) -> None:
         "friend_order": config.friend_order,
         "message_selection": config.message_selection,
         "completion_notifications_enabled": config.completion_notifications_enabled,
+        "preflight_after_health_enabled": config.preflight_after_health_enabled,
         "log_retention_days": config.log_retention_days,
         "log_cleanup_enabled": config.log_cleanup_enabled,
         "active_log_retention_days": config.active_log_retention_days,

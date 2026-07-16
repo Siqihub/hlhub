@@ -17,6 +17,7 @@ BROWSER_ACTIONS = {
     "startup-recovery",
     "repair-playwright",
     "refresh-account-profile",
+    "preflight",
 }
 
 
@@ -92,7 +93,7 @@ class ActionManager:
             "scan-friends",
             "refresh-friend-avatars",
             "repair-playwright",
-            "refresh-account-profile",
+            "refresh-account-profile", "preflight",
         }:
             return [
                 sys.executable,

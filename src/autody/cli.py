@@ -33,6 +33,7 @@ from autody.friend_discovery import (
 from autody.locking import SingleInstanceLock, TaskAlreadyRunning
 from autody.logging_setup import setup_logging
 from autody.messages import read_messages
+from autody.preflight import PlaywrightPreflightInspector, PreflightStore, global_failure, run_preflight
 from autody.recovery import recovery_due
 from autody.runner import RunStatus, run_daily
 from autody.runtime import configure_runtime, doctor_playwright, repair_playwright
@@ -165,6 +166,54 @@ def _sending_active(config: AppConfig) -> bool:
         path.unlink(missing_ok=True)
         return False
     return True
+
+
+def _preflight_store(config: AppConfig) -> PreflightStore:
+    return PreflightStore(config.state_file.parent / "preflight")
+
+
+def _preflight_request_path(config: AppConfig) -> Path:
+    return config.state_file.parent / "preflight" / "request.json"
+
+
+def _preflight_cancelled(config: AppConfig) -> bool:
+    return (config.state_file.parent / "preflight" / "cancel.json").is_file()
+
+
+def _run_preflight_with_page(
+    loaded: AppConfig, page, *, target_ids: list[str] | None, trigger_source: str
+) -> dict:
+    store = _preflight_store(loaded)
+    inspector = PlaywrightPreflightInspector(page, friend_timeout_ms=loaded.friend_search_timeout_ms)
+    enabled_count = sum(
+        target.enabled and (not target_ids or (target.stable_id or target.candidate_id) in target_ids)
+        for target in loaded.targets
+    )
+    store.save_progress({
+        "running": True, "completed_targets": 0, "total_targets": enabled_count,
+        "current_status": "checking_chat_page",
+    })
+    try:
+        inspector.chat_ready()
+        result = run_preflight(
+            loaded, inspector, target_ids=target_ids, trigger_source=trigger_source,
+            cancelled=lambda: _preflight_cancelled(loaded),
+            on_progress=store.save_progress,
+        )
+    except RuntimeError as exc:
+        status = "login_required" if str(exc) == "login_required" else "chat_page_unavailable"
+        result = global_failure(status, trigger_source=trigger_source, error_summary=str(exc))
+    store.save(result)
+    return result
+
+
+def _automatic_preflight_due(loaded: AppConfig) -> bool:
+    latest = _preflight_store(loaded).load_latest()
+    if not latest or latest.get("trigger_source") != "health_check":
+        return True
+    if str(latest.get("completed_at", ""))[:10] != datetime.now().date().isoformat():
+        return True
+    return latest.get("total_targets") == 0 and latest.get("global_status") not in {"ready", "ready_with_warnings"}
 
 
 @contextmanager
@@ -311,6 +360,14 @@ def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
                         except Exception as exc:
                             record_discovery_failure(discovery_path, str(exc))
                             logging.warning("登录健康检查后的候选好友扫描失败：%s", exc)
+                if loaded.preflight_after_health_enabled and _automatic_preflight_due(loaded):
+                    try:
+                        result = _run_preflight_with_page(
+                            loaded, page, target_ids=None, trigger_source="health_check"
+                        )
+                        logging.info("发送前自检完成：可用 %s，异常 %s", result["ready_count"], result["failed_count"] + result["blocked_count"])
+                    except Exception as exc:
+                        logging.warning("发送前自检未完成：%s", type(exc).__name__)
     except TaskAlreadyRunning:
         _busy()
         return
@@ -325,6 +382,50 @@ def health_check(config: Path = typer.Option(Path("config.yaml"), "--config")):
         typer.echo("登录健康检查发生未捕获异常，请查看当天日志。", err=True)
         raise typer.Exit(1) from exc
     typer.echo("登录状态正常，聊天页可用。")
+
+
+@app.command("preflight")
+def preflight(config: Path = typer.Option(Path("config.yaml"), "--config")):
+    """只读检查聊天页面；绝不选择、输入或发送文案。"""
+    loaded = load_config(config)
+    store = _preflight_store(loaded)
+    request_path = _preflight_request_path(loaded)
+    cancel_path = request_path.parent / "cancel.json"
+    try:
+        requested = json.loads(request_path.read_text(encoding="utf-8")).get("target_ids") if request_path.is_file() else None
+    except (OSError, json.JSONDecodeError):
+        requested = None
+    cancel_path.unlink(missing_ok=True)
+    if _sending_active(loaded):
+        store.save(global_failure("browser_busy", trigger_source="manual"))
+        typer.echo("AutoDy 正在执行其他浏览器任务，请稍后重试")
+        return
+    try:
+        with SingleInstanceLock(loaded.lock_file):
+            configure_runtime(_project_root(config))
+            setup_logging(loaded)
+            logging.info("发送前自检开始：目标 %s 个", len(requested or [target for target in loaded.targets if target.enabled]))
+            with open_chat(
+                loaded.profile_dir, loaded.page_load_timeout_ms, loaded.headless,
+                home=_project_root(config),
+            ) as page:
+                result = _run_preflight_with_page(loaded, page, target_ids=requested, trigger_source="manual")
+            logging.info("发送前自检完成：可用 %s，异常 %s", result["ready_count"], result["failed_count"] + result["blocked_count"])
+            typer.echo(f"发送前自检完成：可用 {result['ready_count']}，异常 {result['failed_count'] + result['blocked_count']}。")
+    except TaskAlreadyRunning:
+        store.save(global_failure("browser_busy", trigger_source="manual"))
+        _busy()
+    except AuthenticationError as exc:
+        store.save(global_failure("login_required", trigger_source="manual", error_summary=str(exc)))
+        typer.echo("抖音登录已失效，请重新登录", err=True)
+    except ChatPageLoadError as exc:
+        store.save(global_failure("chat_page_unavailable", trigger_source="manual", error_summary=str(exc)))
+        typer.echo("抖音聊天页面结构可能已更新", err=True)
+    except Exception as exc:
+        store.save(global_failure("browser_unavailable", trigger_source="manual", error_summary=type(exc).__name__))
+        logging.exception("发送前自检发生未捕获异常。")
+        typer.echo("浏览器组件不可用，请运行系统检查", err=True)
+        raise typer.Exit(1) from exc
 
 
 @app.command("scan-friends")

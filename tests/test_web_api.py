@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from autody.web_api import create_app
 from autody.history import TaskHistoryStore, TaskRunRecord
 from autody.config import Target, load_config, save_config
+from autody.preflight import PreflightStore
 
 
 def make_project(tmp_path: Path) -> Path:
@@ -130,6 +131,38 @@ def test_config_and_messages_can_be_updated(tmp_path: Path):
     assert response.status_code == 200
     assert response.json()["messages"] == ["甲", "乙"]
     assert (tmp_path / "messages.txt").read_text(encoding="utf-8") == "甲\n乙\n"
+
+
+def test_preflight_routes_validate_target_ids_and_return_masked_persistence(tmp_path: Path):
+    calls = []
+    config = make_project(tmp_path)
+    loaded = load_config(config)
+    loaded.targets[0].stable_id = "target-one"; loaded.targets[0].candidate_id = "candidate-one"
+    save_config(config, loaded)
+    client = TestClient(create_app(config, action_runner=lambda action: calls.append(action) or {"id": "preflight-1", "action": action, "status": "running"}))
+
+    invalid = client.post("/api/preflight/run", json={"target_ids": ["unknown"]})
+    started = client.post("/api/preflight/run", json={"target_ids": ["target-one"]})
+
+    assert invalid.status_code == 422
+    assert started.status_code == 202
+    assert calls == ["preflight"]
+    request = json.loads((tmp_path / "data" / "preflight" / "request.json").read_text(encoding="utf-8"))
+    assert request == {"target_ids": ["target-one"]}
+    assert client.post("/api/preflight/cancel").json() == {"cancelled": True}
+
+
+def test_preflight_status_exposes_masked_progress(tmp_path: Path):
+    config = make_project(tmp_path)
+    store = PreflightStore(tmp_path / "data" / "preflight")
+    store.save_progress({"running": True, "completed_targets": 2, "total_targets": 3, "current_status": "ready"})
+
+    response = TestClient(create_app(config)).get("/api/preflight/status")
+
+    assert response.status_code == 200
+    assert response.json()["progress"] == {
+        "running": True, "completed_targets": 2, "total_targets": 3, "current_status": "ready"
+    }
 
 
 def test_log_retention_config_validation_and_cleanup_api(tmp_path: Path):
