@@ -35,15 +35,23 @@ def test_repair_script_uses_project_local_browser_directory():
 def test_dashboard_launcher_and_shortcut_are_portable_and_use_icon():
     launcher = Path("scripts/start-dashboard.cmd").read_text(encoding="utf-8-sig")
     for token in [
-        "%~dp0..",
+        "%~dp0",
+        "ScriptsDir",
+        "start-dashboard.ps1",
+        "powershell.exe",
+    ]:
+        assert token in launcher
+
+    startup = Path("scripts/start-dashboard.ps1").read_text(encoding="utf-8-sig")
+    for token in [
         "AUTODY_HOME",
         "PLAYWRIGHT_BROWSERS_PATH",
         "PLAYWRIGHT_SKIP_BROWSER_GC",
         ".venv\\Scripts\\python.exe",
-        "-m autody.cli",
-        "请先运行 install.cmd",
+        "-m\", \"autody.cli\", \"ui\"",
+        "Read-Host",
     ]:
-        assert token in launcher
+        assert token in startup
 
     shortcut = Path("scripts/install-shortcut.ps1").read_text(encoding="utf-8-sig")
     for token in [

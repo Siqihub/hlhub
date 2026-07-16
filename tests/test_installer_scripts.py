@@ -63,5 +63,17 @@ def test_top_level_installer_propagates_powershell_failure():
 def test_dashboard_launcher_reuses_an_identified_project_service():
     text = Path("scripts/start-dashboard.cmd").read_text(encoding="utf-8")
 
+    assert "set \"ScriptsDir=%~dp0\"" in text
+    assert "start-dashboard.ps1" in text
+    assert all(byte < 128 for byte in Path("scripts/start-dashboard.cmd").read_bytes())
+
+
+def test_dashboard_powershell_launcher_waits_for_identity_and_preserves_failures():
+    text = Path("scripts/start-dashboard.ps1").read_text(encoding="utf-8")
+
+    assert "Set-StrictMode -Version Latest" in text
     assert "/api/service-identity" in text
-    assert "Start-Process 'http://127.0.0.1:8765'" in text
+    assert "Start-Process -FilePath $ProjectPython" in text
+    assert "Stop-Process -Id $connection.OwningProcess" in text
+    assert "Read-Host" in text
+    assert 'Start-Process "$Url"' in text

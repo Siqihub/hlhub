@@ -54,7 +54,10 @@ def test_every_scheduled_task_uses_ignore_new_policy():
 
 
 def test_source_launchers_use_project_local_python_not_console_entrypoint():
-    for path in [Path("scripts/start-dashboard.cmd"), Path("scripts/run-scheduled.ps1"), Path("scripts/health-check.ps1")]:
+    startup = Path("scripts/start-dashboard.ps1").read_text(encoding="utf-8-sig")
+    assert ".venv\\Scripts\\python.exe" in startup
+    assert "autody.cli" in startup
+    for path in [Path("scripts/run-scheduled.ps1"), Path("scripts/health-check.ps1")]:
         text = path.read_text(encoding="utf-8-sig")
         assert ".venv\\Scripts\\python.exe" in text
         assert "autody.cli" in text
