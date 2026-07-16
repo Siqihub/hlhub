@@ -32,4 +32,4 @@ jobs:
           files: |
             output/AutoDy-Windows-Portable.zip
             output/AutoDy-Windows-Portable.zip.sha256
-          generate_release_notes: true
+          body_path: docs/RELEASE_NOTES.md
