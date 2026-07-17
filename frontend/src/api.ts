@@ -38,6 +38,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   status: () => request<DashboardStatus>("/api/status"),
+  modules: () => request<{ modules: import("./types").OptionalModuleStatus[] }>("/api/modules"),
+  installTestCenter: (file?: File) => {
+    if (!file) return request<import("./types").OptionalModuleStatus>("/api/modules/autody-test-center/install", { method: "POST" });
+    const data = new FormData(); data.append("file", file);
+    return request<import("./types").OptionalModuleStatus>("/api/modules/autody-test-center/install", { method: "POST", body: data });
+  },
+  uninstallTestCenter: () => request<import("./types").OptionalModuleStatus>("/api/modules/autody-test-center/uninstall", { method: "POST", body: JSON.stringify({ confirmed: true }) }),
   serviceIdentity: () => request<ServiceIdentity>("/api/service-identity"),
   todayPlan: () => request<TodayPlan>("/api/today-plan"),
   failedTargets: () => request<FailedTargetCenter>("/api/failed-targets"),

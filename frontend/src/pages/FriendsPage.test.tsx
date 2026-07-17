@@ -118,7 +118,7 @@ test("selects target cards by click and keyboard without letting nested controls
 
   const checkbox = await screen.findByRole("checkbox", { name: "选择 小明" });
   const card = checkbox.closest(".friend-editor-row");
-  const deleteButton = screen.getByRole("button", { name: "删除 小明" });
+  const deleteButton = screen.getByRole("button", { name: "删除目标 小明" });
 
   expect(card).not.toBeNull();
   expect(checkbox).not.toBeChecked();
@@ -134,30 +134,36 @@ test("selects target cards by click and keyboard without letting nested controls
 
   fireEvent.click(checkbox);
   expect(checkbox).not.toBeChecked();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   fireEvent.click(deleteButton);
+  expect(confirm).toHaveBeenCalledWith("删除目标「小明」？");
   expect(apiMocks.friendBatch).toHaveBeenCalledWith(["friend-xiaoming"], "delete");
   expect(checkbox).not.toBeChecked();
 });
 
-test("runs a single-target preflight without changing target selection", async () => {
+test("renders the target delete control as a compact absolute card action", async () => {
   render(<FriendsPage notify={vi.fn()} />);
 
-  const checkbox = await screen.findByRole("checkbox", { name: "选择 小明" });
-  fireEvent.click(screen.getByRole("button", { name: "测试可发送状态" }));
-
-  await waitFor(() => expect(apiMocks.runPreflight).toHaveBeenCalledWith(["friend-xiaoming"]));
-  expect(checkbox).not.toBeChecked();
+  const button = await screen.findByRole("button", { name: "删除目标 小明" });
+  expect(button).toHaveAttribute("title", "删除目标");
+  expect(button).toHaveClass("icon-button", "danger");
+  expect(button.parentElement).toHaveClass("friend-editor-row");
 });
 
-test("edits configured-target settings without toggling the target card", async () => {
+test("does not expose single-target preflight controls or request preflight data", async () => {
   render(<FriendsPage notify={vi.fn()} />);
 
-  const checkbox = await screen.findByRole("checkbox", { name: "选择 小明" });
-  fireEvent.click(screen.getByRole("button", { name: "编辑目标设置 小明" }));
-  expect(checkbox).not.toBeChecked();
-  fireEvent.change(screen.getByLabelText("延迟分钟"), { target: { value: "12" } });
-  fireEvent.click(screen.getByRole("button", { name: "保存目标设置" }));
+  await screen.findByRole("checkbox", { name: "选择 小明" });
+  expect(screen.queryByText("测试可发送状态")).not.toBeInTheDocument();
+  expect(apiMocks.preflightLatest).not.toHaveBeenCalled();
+  expect(apiMocks.runPreflight).not.toHaveBeenCalled();
+});
 
-  await waitFor(() => expect(apiMocks.saveTargetSettings).toHaveBeenCalledWith("friend-xiaoming", expect.objectContaining({ delay_offset_minutes: 12 })));
-  expect(checkbox).not.toBeChecked();
+test("keeps advanced target overrides out of the normal friend page", async () => {
+  render(<FriendsPage notify={vi.fn()} />);
+
+  await screen.findByText("续火目标");
+  expect(screen.queryByRole("button", { name: "编辑目标设置 小明" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "编辑目标设置" })).not.toBeInTheDocument();
+  expect(apiMocks.saveTargetSettings).not.toHaveBeenCalled();
 });

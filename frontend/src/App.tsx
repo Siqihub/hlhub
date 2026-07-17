@@ -9,6 +9,7 @@ import { MessagesPage } from "./pages/MessagesPage";
 import { MessagePacksPage } from "./pages/MessagePacksPage";
 import { SchedulerPage } from "./pages/SchedulerPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { ModuleHostPage } from "./pages/ModuleHostPage";
 import type { AccountProfile, DashboardStatus } from "./types";
 
 function accountRefreshErrorMessage(error: unknown): string {
@@ -21,14 +22,16 @@ function accountRefreshErrorMessage(error: unknown): string {
 }
 
 export default function App() {
-  const [view, setView] = useState<ViewName>("dashboard");
+  const [view, setView] = useState<ViewName | "test-center">("dashboard");
   const [status, setStatus] = useState<DashboardStatus | null>(null);
   const [account, setAccount] = useState<AccountProfile | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState("");
+  const [testCenterInstalled, setTestCenterInstalled] = useState(false);
   const load = useCallback(() => {
     void api.status().then(setStatus);
     void api.accountProfile().then(setAccount).catch(() => setAccount(null));
+    void api.modules().then((result) => setTestCenterInstalled(Boolean(result.modules.find((item) => item.id === "autody-test-center")?.installed))).catch(() => setTestCenterInstalled(false));
   }, []);
   useEffect(() => {
     load();
@@ -78,16 +81,17 @@ export default function App() {
   if (!status) return <div className="app-loading">正在连接 AutoDy 本地服务…</div>;
   return (
     <div className="app-shell">
-      <Sidebar active={view} onChange={setView} account={account} onRefreshAccount={() => void refreshAccount()} />
+      <Sidebar active={view === "test-center" ? "settings" : view} onChange={setView} account={account} onRefreshAccount={() => void refreshAccount()} />
       <main className="workspace">
-        {view === "dashboard" && <DashboardPage status={status} busy={busy} onAction={action} onNavigate={setView} />}
+        {view === "dashboard" && <DashboardPage status={status} busy={busy} onAction={action} onNavigate={setView as (view: ViewName) => void} />}
         {view === "friends" && <FriendsPage notify={notify} />}
         {view === "messages" && <MessagesPage notify={notify} onNavigate={setView} />}
         {view === "packs" && <MessagePacksPage notify={notify} />}
         {view === "scheduler" && <SchedulerPage status={status} notify={notify} onRefresh={load} />}
         {view === "logs" && <LogsPage summary={status.statistics.log_summary} />}
         {view === "backup" && <BackupPage notify={notify} />}
-        {view === "settings" && <SettingsPage notify={notify} />}
+        {view === "settings" && <SettingsPage notify={notify} onOpenTestCenter={() => setView("test-center")} />}
+        {view === "test-center" && testCenterInstalled && <ModuleHostPage onRemoved={() => { setTestCenterInstalled(false); setView("settings"); }} />}
       </main>
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>

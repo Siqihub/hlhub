@@ -99,10 +99,9 @@ td { height: 43px; padding: 0 14px; border-top: 1px solid #edf1f5; color: #26344
 .form-panel { padding-bottom: 16px; }
 .text-button { display: inline-flex; align-items: center; gap: 5px; border: 0; color: #1769e8; background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; }
 .friend-editor-list { padding: 8px 16px; display: grid; gap: 8px; }
-.friend-editor-row { position: relative; min-height: 68px; display: grid; grid-template-columns: 42px minmax(120px, 1fr) 38px; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #e4eaf1; border-radius: 8px; background: #fff; transition: background .14s ease, border-color .14s ease, box-shadow .14s ease; }
-.target-preflight { white-space: nowrap; }
+.friend-editor-row { position: relative; min-height: 68px; display: grid; grid-template-columns: 42px minmax(120px, 1fr); align-items: center; gap: 10px; padding: 10px 48px 10px 12px; border: 1px solid #e4eaf1; border-radius: 8px; background: #fff; transition: background .14s ease, border-color .14s ease, box-shadow .14s ease; }
 .friend-editor-row:hover { border-color: #b8c9dc; background: #fbfdff; box-shadow: 0 2px 7px rgba(37,67,105,.08); }
-.friend-editor-row.selected { border-width: 2px; padding: 9px 11px; }
+.friend-editor-row.selected { border-width: 2px; padding: 9px 47px 9px 11px; }
 .friend-editor-row.disabled-target:not(.selected) { background: #fafbfc; }
 .friend-editor-row.disabled-target .friend-editor-copy { opacity: .72; }
 .friend-editor-copy { min-width: 0; display: grid; gap: 4px; }
@@ -130,8 +129,9 @@ td { height: 43px; padding: 0 14px; border-top: 1px solid #edf1f5; color: #26344
 .row-number, .message-index { color: #8c98aa; font: 12px ui-monospace, monospace; }
 input, textarea, select { width: 100%; border: 1px solid #dce3ec; border-radius: 7px; padding: 10px 12px; color: #18263d; background: #fff; outline: none; }
 input:focus, textarea:focus, select:focus { border-color: #5797ef; box-shadow: 0 0 0 3px rgba(30,112,235,.1); }
-.icon-button { width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
+.icon-button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius:7px; background: transparent; cursor: pointer; }
 .icon-button.danger { color: #d95656; }
+.friend-editor-row .icon-button.danger { position:absolute; top:8px; right:8px; z-index:1; }
 .icon-button:hover { background: #f4f7fb; }
 .toolbar { min-height: 58px; padding: 9px 14px; display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
 .toolbar > span { margin-left: auto; color: #8591a4; font-size: 12px; }

@@ -18,12 +18,22 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-test("renders the read-only plan, failed-target safety state, and environment identity", async () => {
+test("does not render a preflight card or request preflight status on the normal dashboard", async () => {
   render(<DashboardPage status={status} busy={null} onAction={vi.fn()} onNavigate={vi.fn()} />);
-  expect(await screen.findByRole("heading", { name: "今日发送计划" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "今日异常目标" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "运行环境" })).toBeInTheDocument();
-  expect(screen.getByText(/发送结果不确定/)).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /安全重试/ })).not.toBeInTheDocument();
-  await waitFor(() => expect(apiMocks.todayPlan).toHaveBeenCalled());
+
+  expect(await screen.findByRole("heading", { name: "运行总览" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "发送前自检" })).not.toBeInTheDocument();
+  expect(apiMocks.preflightStatus).not.toHaveBeenCalled();
+});
+
+test("keeps Test Center panels out of the normal dashboard", async () => {
+  render(<DashboardPage status={status} busy={null} onAction={vi.fn()} onNavigate={vi.fn()} />);
+
+  await screen.findByRole("heading", { name: "运行总览" });
+  expect(screen.queryByRole("heading", { name: "今日发送计划" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "今日异常目标" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "运行环境" })).not.toBeInTheDocument();
+  expect(apiMocks.todayPlan).not.toHaveBeenCalled();
+  expect(apiMocks.failedTargets).not.toHaveBeenCalled();
+  expect(apiMocks.serviceIdentity).not.toHaveBeenCalled();
 });

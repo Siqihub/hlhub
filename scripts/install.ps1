@@ -118,6 +118,31 @@ function Start-ProjectAutoDyService {
     throw "AutoDy service did not become healthy after restart."
 }
 
+function Update-FrontendBuild {
+    $frontendRoot = Join-Path $Root "frontend"
+    $frontendPackage = Join-Path $frontendRoot "package.json"
+    if (-not (Test-Path -LiteralPath $frontendPackage -PathType Leaf)) {
+        Write-Host "[INFO] Packaged frontend assets detected; no local Node.js rebuild is required."
+        return
+    }
+
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if ($null -eq $npm) {
+        $npm = Get-Command npm -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $npm) {
+        throw "Source frontend is present but npm was not found. Install Node.js, then run npm run build from frontend."
+    }
+
+    Write-Host "[INFO] Source frontend detected; rebuilding production static assets."
+    Push-Location $frontendRoot
+    try {
+        Invoke-NativeChecked -Stage "Source frontend production build" -FilePath $npm.Source -Arguments @("run", "build")
+    } finally {
+        Pop-Location
+    }
+}
+
 function New-ProjectVirtualEnvironment {
     $bootstrap = Get-Command py -ErrorAction SilentlyContinue
     if ($null -ne $bootstrap) {
@@ -139,9 +164,6 @@ if (Test-VirtualEnvironment -PythonPath $Python -ExpectedVenv $Venv) {
     Write-Host "[INFO] Reusing existing virtual environment."
 } else {
     Write-Host "[INFO] Existing virtual environment is missing or invalid; creating a replacement."
-    if ($wasRunning -and -not (Stop-ProjectAutoDyService)) {
-        throw "Refusing to repair the environment because the current AutoDy service could not be identified safely."
-    }
     if (Test-Path -LiteralPath $Venv) {
         $backupRoot = Join-Path $Root "data\backups"
         New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
@@ -156,8 +178,13 @@ if (Test-VirtualEnvironment -PythonPath $Python -ExpectedVenv $Venv) {
     Write-Host "[INFO] Created virtual environment."
 }
 
+if ($wasRunning -and -not (Stop-ProjectAutoDyService)) {
+    throw "Refusing to update while the current AutoDy service could not be identified safely."
+}
+
 Invoke-NativeChecked -Stage "Upgrade pip" -FilePath $Python -Arguments @("-m", "pip", "install", "--upgrade", "pip")
 Invoke-NativeChecked -Stage "Install editable package" -FilePath $Python -Arguments @("-m", "pip", "install", "-e", ".")
+Update-FrontendBuild
 Invoke-NativeChecked -Stage "Install Chromium" -FilePath $Python -Arguments @("-m", "playwright", "install", "chromium")
 
 if (-not (Test-Path -LiteralPath $Config)) {

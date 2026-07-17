@@ -5,6 +5,8 @@ $Output = Join-Path $Root "output"
 $Stage = Join-Path $Output "AutoDy-Windows"
 $Archive = Join-Path $Output "AutoDy-Windows-Portable.zip"
 $Checksum = Join-Path $Output "AutoDy-Windows-Portable.zip.sha256"
+$ModuleArchive = Join-Path $Output "AutoDy-Test-Center.autody-module.zip"
+$ModuleChecksum = Join-Path $Output "AutoDy-Test-Center.autody-module.zip.sha256"
 
 Get-ChildItem -LiteralPath (Join-Path $Root "scripts") -Filter *.ps1 | ForEach-Object {
     $tokens = $null
@@ -18,6 +20,8 @@ Get-ChildItem -LiteralPath (Join-Path $Root "scripts") -Filter *.ps1 | ForEach-O
 if (Test-Path $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }
 if (Test-Path $Archive) { Remove-Item -LiteralPath $Archive -Force }
 if (Test-Path $Checksum) { Remove-Item -LiteralPath $Checksum -Force }
+if (Test-Path $ModuleArchive) { Remove-Item -LiteralPath $ModuleArchive -Force }
+if (Test-Path $ModuleChecksum) { Remove-Item -LiteralPath $ModuleChecksum -Force }
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 $items = @(
@@ -31,6 +35,12 @@ foreach ($item in $items) {
         Copy-Item -LiteralPath $source -Destination $Stage -Recurse -Force
     }
 }
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
+& $Python -c "from pathlib import Path; from autody.modules import build_module_archive; build_module_archive(Path(r'$ModuleArchive'), version='1.0.0')"
+if ($LASTEXITCODE -ne 0) { throw "Optional module package build failed." }
+$moduleStage = Join-Path $Stage "optional-modules"
+New-Item -ItemType Directory -Force -Path $moduleStage | Out-Null
+Copy-Item -LiteralPath $ModuleArchive -Destination $moduleStage -Force
 
 # Sensitive/runtime paths intentionally excluded: .venv, data, browser-profile,
 # avatar-cache, discovered_friends.json, account-profile.json, account-avatar,
@@ -43,5 +53,7 @@ foreach ($item in $forbidden) {
 }
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant()
 "$hash  AutoDy-Windows-Portable.zip" | Set-Content -Encoding ascii -NoNewline $Checksum
+$moduleHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ModuleArchive).Hash.ToLowerInvariant()
+"$moduleHash  AutoDy-Test-Center.autody-module.zip" | Set-Content -Encoding ascii -NoNewline $ModuleChecksum
 Write-Host "Portable archive: $Archive"
 Write-Host "SHA-256: $Checksum"

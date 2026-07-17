@@ -35,6 +35,7 @@ from autody.friend_discovery import is_discovery_stale, load_discovered_friends
 from autody.history import TaskHistoryStore, bootstrap_legacy_daily_history, dashboard_statistics, stable_target_id
 from autody.log_center import archive_historical_logs, archive_logs, automatic_cleanup_once_daily, cleanup_logs, log_storage_summary, log_summary, query_logs, record_cleanup_result
 from autody.message_packs import ImportMode, MessagePackError, MessagePackService
+from autody.modules import MODULE_FILENAME, MODULE_ID, ModuleManager, ModulePackageError, build_module_archive
 from autody.messages import read_messages
 from autody.preflight import PreflightStore
 from autody.recovery import recovery_due
@@ -185,22 +186,25 @@ def _target_id(target: Target) -> str:
     return target.stable_id or target.candidate_id or stable_target_id(target.name)
 
 
-def _effective_target_settings(target: Target, config: AppConfig) -> dict:
-    if target.suffix_mode == "disabled":
+def _effective_target_settings(target: Target, config: AppConfig, override: dict | None = None) -> dict:
+    override = override or {}
+    suffix_mode = override.get("suffix_mode", "global")
+    suffix_override = override.get("suffix_override")
+    if suffix_mode == "disabled":
         suffix = "已禁用"
-    elif target.suffix_mode == "custom" and (target.suffix_override or "").strip():
-        suffix = target.suffix_override.strip()
+    elif suffix_mode == "custom" and isinstance(suffix_override, str) and suffix_override.strip():
+        suffix = suffix_override.strip()
     else:
         suffix = "全局后缀" if config.message_suffix.enabled else "未设置后缀"
     return {
-        "message_source": target.message_pack or "全局本地文案库",
-        "message_source_origin": "override" if target.message_pack else "global",
+        "message_source": override.get("message_pack") or "全局本地文案库",
+        "message_source_origin": "override" if override.get("message_pack") else "global",
         "suffix": suffix,
-        "suffix_origin": "override" if target.suffix_mode != "global" else "global",
-        "message_selection": target.message_selection or config.message_selection,
-        "message_selection_origin": "override" if target.message_selection else "global",
-        "delay_offset_minutes": target.delay_offset_minutes,
-        "send_order": target.send_order,
+        "suffix_origin": "override" if suffix_mode != "global" else "global",
+        "message_selection": override.get("message_selection") or config.message_selection,
+        "message_selection_origin": "override" if override.get("message_selection") else "global",
+        "delay_offset_minutes": int(override.get("delay_offset_minutes", 0)),
+        "send_order": override.get("send_order"),
     }
 
 
@@ -257,7 +261,7 @@ def _failure_code(value: object, confirmation: object) -> str:
     return "unexpected_error"
 
 
-def _today_plan(config: AppConfig, state, day: date) -> dict:
+def _today_plan(config: AppConfig, state, day: date, overrides: dict[str, dict] | None = None) -> dict:
     daily = state.daily.get(day.isoformat(), {})
     succeeded = set(daily.get("succeeded", []))
     failures = daily.get("failures", {})
@@ -269,7 +273,7 @@ def _today_plan(config: AppConfig, state, day: date) -> dict:
     enabled = [target for target in config.targets if target.enabled]
     ordered = sorted(
         enumerate(enabled),
-        key=lambda row: (row[1].send_order is None, row[1].send_order if row[1].send_order is not None else row[0], row[0]),
+        key=lambda row: ((overrides or {}).get(_target_id(row[1]), {}).get("send_order") is None, (overrides or {}).get(_target_id(row[1]), {}).get("send_order", row[0]), row[0]),
     )
     rows = []
     blocked = 0
@@ -281,11 +285,11 @@ def _today_plan(config: AppConfig, state, day: date) -> dict:
         status = "success" if target.name in succeeded else "blocked" if ambiguous or code == "blocked_ambiguous_target" else "failed" if failure else "pending"
         if status == "blocked":
             blocked += 1
-        settings = _effective_target_settings(target, config)
+        settings = _effective_target_settings(target, config, (overrides or {}).get(identity))
         rows.append({
             "target_id": identity,
             "display_name": target.name,
-            "planned_at": (base + timedelta(minutes=target.delay_offset_minutes)).isoformat(timespec="minutes"),
+            "planned_at": (base + timedelta(minutes=settings["delay_offset_minutes"])).isoformat(timespec="minutes"),
             "status": status,
             "blocked_reason": "昵称存在歧义，已阻止自动发送。" if ambiguous else _FAILURE_EXPLANATIONS.get(code or "", None),
             **settings,
@@ -508,6 +512,22 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
     # Log maintenance is deliberately best-effort and limited by its local date
     # marker; it must never prevent the dashboard from starting.
     initial_config = load_config(config_path)
+    module_manager = ModuleManager(initial_config.state_file.parent, core_version="1.2.0")
+
+    def module_overrides() -> dict[str, dict]:
+        path = module_manager.module_root / "data" / "overrides.json"
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def save_module_overrides(value: dict[str, dict]) -> None:
+        path = module_manager.module_root / "data" / "overrides.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
     if initial_config.log_cleanup_enabled:
         automatic_cleanup_once_daily(initial_config.state_file.parent / "logs", active_days=initial_config.active_log_retention_days, archive_days=initial_config.archive_log_retention_days)
     task_cache: dict[str, object] = {"expires": 0.0, "rows": []}
@@ -744,16 +764,14 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             "statistics": statistics,
         }
 
-    @app.get("/api/today-plan")
     def today_plan(today: str | None = None):
         config = load_config(config_path)
         try:
             plan_day = date.fromisoformat(today) if today else date.today()
         except ValueError as exc:
             raise HTTPException(422, "日期格式应为 YYYY-MM-DD") from exc
-        return _today_plan(config, StateStore(config.state_file).load(), plan_day)
+        return _today_plan(config, StateStore(config.state_file).load(), plan_day, module_overrides())
 
-    @app.get("/api/failed-targets")
     def failed_targets(today: str | None = None):
         config = load_config(config_path)
         try:
@@ -762,7 +780,6 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             raise HTTPException(422, "日期格式应为 YYYY-MM-DD") from exc
         return _failed_targets(config, StateStore(config.state_file).load(), failure_day)
 
-    @app.post("/api/failed-targets/{target_id}/retry", status_code=202)
     def retry_failed_target(target_id: str, today: str | None = None):
         config = load_config(config_path)
         try:
@@ -777,6 +794,105 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             return run_action("run")
         except ActionAlreadyRunning as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/modules")
+    def module_status():
+        bundled = root / "optional-modules" / MODULE_FILENAME
+        return {"modules": [{**module_manager.status(), "bundled_available": True, "bundled_version": "1.0.0"}]}
+
+    @app.post("/api/modules/autody-test-center/install")
+    async def install_test_center(file: UploadFile | None = File(default=None)):
+        bundled = root / "optional-modules" / MODULE_FILENAME
+        temporary: Path | None = None
+        try:
+            if file is None:
+                if bundled.is_file():
+                    package = bundled
+                else:
+                    temporary = initial_config.state_file.parent / f".{uuid.uuid4().hex}.autody-module.zip"
+                    build_module_archive(temporary, version="1.0.0")
+                    package = temporary
+            else:
+                suffix = ".autody-module.zip"
+                temporary = initial_config.state_file.parent / f".{uuid.uuid4().hex}{suffix}"
+                temporary.write_bytes(await file.read())
+                package = temporary
+            return module_manager.install(package)
+        except ModulePackageError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    @app.post("/api/modules/autody-test-center/uninstall")
+    def uninstall_test_center(payload: dict):
+        if payload.get("confirmed") is not True:
+            raise HTTPException(422, "卸载测试中心后，所有测试历史、测试设置和测试目标覆盖将被永久删除。AutoDy 的正常好友、文案、发送记录和浏览器数据不会受到影响。")
+        try:
+            module_manager.uninstall()
+        except ModulePackageError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return module_manager.status()
+
+    def _require_test_center() -> None:
+        if not module_manager.installed():
+            raise HTTPException(404, "测试中心未安装")
+
+    @app.get("/api/modules/autody-test-center/today-plan")
+    def test_center_today_plan(today: str | None = None):
+        _require_test_center()
+        return today_plan(today)
+
+    @app.get("/api/modules/autody-test-center/failed-targets")
+    def test_center_failed_targets(today: str | None = None):
+        _require_test_center()
+        return failed_targets(today)
+
+    @app.post("/api/modules/autody-test-center/failed-targets/{target_id}/retry", status_code=202)
+    def test_center_retry_failed_target(target_id: str):
+        _require_test_center()
+        return retry_failed_target(target_id)
+
+    @app.get("/api/modules/autody-test-center/diagnostics")
+    def test_center_diagnostics():
+        _require_test_center()
+        return {"environment": "本机环境已加载；测试中心仅执行只读检查。", "launcher": "使用项目本地运行时。", "history": "暂无模块测试历史"}
+
+    @app.get("/api/modules/autody-test-center/preflight/status")
+    def test_center_preflight_status():
+        _require_test_center()
+        config = load_config(config_path)
+        store = PreflightStore(module_manager.module_root / "data" / "preflight")
+        return {"running": False, "progress": store.load_progress(), **preflight_payload(config, store.load_latest())}
+
+    @app.post("/api/modules/autody-test-center/preflight/run", status_code=202)
+    def test_center_preflight_run(payload: PreflightRunRequest):
+        _require_test_center()
+        config = load_config(config_path)
+        valid_ids = {target.stable_id or target.candidate_id for target in config.targets if target.enabled}
+        if payload.target_ids is not None and (not payload.target_ids or any(item not in valid_ids for item in payload.target_ids)):
+            raise HTTPException(422, "续火目标无效或已停用")
+        request_path = module_manager.module_root / "data" / "preflight" / "request.json"
+        request_path.parent.mkdir(parents=True, exist_ok=True)
+        request_path.write_text(json.dumps({"target_ids": payload.target_ids}, ensure_ascii=False), encoding="utf-8")
+        return {"id": f"module-preflight-{uuid.uuid4().hex}", "action": "preflight", "status": "queued"}
+
+    @app.post("/api/modules/autody-test-center/preflight/cancel")
+    def test_center_preflight_cancel():
+        _require_test_center()
+        path = module_manager.module_root / "data" / "preflight" / "cancel.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"requested_at": datetime.now().isoformat()}), encoding="utf-8")
+        return {"cancelled": True}
+
+    @app.get("/api/modules/autody-test-center/frontend/{path:path}")
+    def test_center_frontend(path: str):
+        _require_test_center()
+        frontend_root = module_manager.module_root / "frontend"
+        target = (frontend_root / path).resolve()
+        if not path or frontend_root.resolve() not in target.parents or not target.is_file():
+            raise HTTPException(404, "模块资源不存在")
+        return FileResponse(target, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/account-profile")
     def account_profile():
@@ -1137,24 +1253,18 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     "today_status": "success" if target.name in succeeded else "failed" if target.name in failures else "pending",
                     "last_success_date": _last_success_date(state, target.name),
                     "ambiguous_duplicate": target.enabled and normalized_names[" ".join(target.name.split()).casefold()] > 1,
-                    "settings": _effective_target_settings(target, config),
                 }
             )
         return {"friends": friends}
 
-    @app.put("/api/friends/{target_id}/settings")
     def update_target_settings(target_id: str, payload: TargetSettingsUpdate):
         config = load_config(config_path)
         target = next((item for item in config.targets if _target_id(item) == target_id), None)
         if target is None:
             raise HTTPException(404, "续火目标不存在")
+        overrides = module_overrides()
         if payload.reset_overrides:
-            target.message_pack = None
-            target.suffix_mode = "global"
-            target.suffix_override = None
-            target.delay_offset_minutes = 0
-            target.message_selection = None
-            target.send_order = None
+            overrides.pop(target_id, None)
         else:
             values = payload.model_dump(exclude={"reset_overrides"}, exclude_none=True)
             if values.get("message_pack"):
@@ -1164,13 +1274,18 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
                     raise HTTPException(422, str(exc)) from exc
                 if values["message_pack"] not in ids:
                     raise HTTPException(422, "选择的文案包不存在")
-            for field_name, value in values.items():
-                setattr(target, field_name, value)
-            if target.suffix_mode == "custom" and not (target.suffix_override or "").strip():
+            current = dict(overrides.get(target_id, {}))
+            current.update({key: value for key, value in values.items() if key != "enabled"})
+            if current.get("suffix_mode") == "custom" and not str(current.get("suffix_override") or "").strip():
                 raise HTTPException(422, "自定义后缀不能为空")
-        config = AppConfig.model_validate(config.model_dump())
-        save_config(config_path, config)
-        return {"target_id": _target_id(target), "settings": _effective_target_settings(target, config)}
+            overrides[target_id] = current
+        save_module_overrides(overrides)
+        return {"target_id": _target_id(target), "settings": _effective_target_settings(target, config, overrides.get(target_id))}
+
+    @app.put("/api/modules/autody-test-center/targets/{target_id}/settings")
+    def test_center_target_settings(target_id: str, payload: TargetSettingsUpdate):
+        _require_test_center()
+        return update_target_settings(target_id, payload)
 
     @app.post("/api/friends/discovered/batch")
     def add_discovered_friends(payload: DiscoveredFriendBatchAdd):
@@ -1565,6 +1680,6 @@ def create_app(config_path: Path, action_runner=None, now_provider=None) -> Fast
             file = (static_dir / path).resolve()
             if path and static_dir.resolve() in file.parents and file.is_file():
                 return FileResponse(file)
-            return FileResponse(static_dir / "index.html")
+            return FileResponse(static_dir / "index.html", headers={"Cache-Control": "no-store"})
 
     return app

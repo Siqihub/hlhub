@@ -10,6 +10,7 @@ from autody.web_api import create_app
 from autody.history import TaskHistoryStore, TaskRunRecord
 from autody.config import Target, load_config, save_config
 from autody.preflight import PreflightStore
+from autody.modules import ModuleManager, build_module_archive
 
 
 def make_project(tmp_path: Path) -> Path:
@@ -101,6 +102,13 @@ def test_service_identity_reports_local_runtime_without_private_browser_data(tmp
     assert "browser-profile" not in str(data).lower()
 
 
+def test_frontend_entrypoint_is_not_cached_between_production_builds(tmp_path: Path):
+    response = TestClient(create_app(make_project(tmp_path))).get("/")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_status_reports_latest_login_health_result(tmp_path: Path):
     config = make_project(tmp_path)
     log = tmp_path / "data" / "logs" / "autody.log"
@@ -167,17 +175,26 @@ def test_preflight_routes_validate_target_ids_and_return_masked_persistence(tmp_
     assert client.post("/api/preflight/cancel").json() == {"cancelled": True}
 
 
-def test_target_settings_and_today_plan_are_read_only(tmp_path: Path):
+def _install_test_center(config_path: Path) -> None:
+    archive = build_module_archive(config_path.parent / "AutoDy-Test-Center.autody-module.zip", version="1.0.0")
+    ModuleManager(config_path.parent / "data", core_version="1.2.0").install(archive)
+
+
+def test_target_settings_and_today_plan_are_test_center_routes(tmp_path: Path):
     config_path = make_project(tmp_path)
     config = load_config(config_path)
     config.targets[0].stable_id = "target-one"
     config.targets[1].stable_id = "target-two"
     save_config(config_path, config)
     before = (tmp_path / "data" / "state.json").read_bytes()
+    core_client = TestClient(create_app(config_path))
+    assert core_client.get("/api/today-plan?today=2026-06-24").status_code == 404
+    assert core_client.put("/api/friends/target-one/settings", json={}).status_code == 404
+    _install_test_center(config_path)
     client = TestClient(create_app(config_path))
 
     updated = client.put(
-        "/api/friends/target-one/settings",
+        "/api/modules/autody-test-center/targets/target-one/settings",
         json={
             "message_pack": "daily",
             "suffix_mode": "disabled",
@@ -187,7 +204,7 @@ def test_target_settings_and_today_plan_are_read_only(tmp_path: Path):
             "note": "测试备注",
         },
     )
-    plan = client.get("/api/today-plan?today=2026-06-24")
+    plan = client.get("/api/modules/autody-test-center/today-plan?today=2026-06-24")
 
     assert updated.status_code == 200
     assert updated.json()["settings"]["delay_offset_minutes"] == 12
@@ -200,7 +217,7 @@ def test_target_settings_and_today_plan_are_read_only(tmp_path: Path):
     assert (tmp_path / "data" / "state.json").read_bytes() == before
 
 
-def test_failed_target_center_blocks_uncertain_retry_and_allows_definitely_unsent(tmp_path: Path):
+def test_failed_target_center_is_available_only_inside_test_center(tmp_path: Path):
     config_path = make_project(tmp_path)
     config = load_config(config_path)
     config.targets[0].stable_id = "target-one"
@@ -214,9 +231,12 @@ def test_failed_target_center_blocks_uncertain_retry_and_allows_definitely_unsen
     daily["confirmation_results"] = {"target-two": "confirmation_failed"}
     state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     started: list[str] = []
+    core_client = TestClient(create_app(config_path, action_runner=lambda action: started.append(action) or {"id": "job", "status": "running"}))
+    assert core_client.get("/api/failed-targets?today=2026-06-24").status_code == 404
+    _install_test_center(config_path)
     client = TestClient(create_app(config_path, action_runner=lambda action: started.append(action) or {"id": "job", "status": "running"}))
 
-    data = client.get("/api/failed-targets?today=2026-06-24").json()
+    data = client.get("/api/modules/autody-test-center/failed-targets?today=2026-06-24").json()
     uncertain = next(item for item in data["items"] if item["target_id"] == "target-two")
     safe = next(item for item in data["items"] if item["target_id"] == "target-one")
 
@@ -224,7 +244,7 @@ def test_failed_target_center_blocks_uncertain_retry_and_allows_definitely_unsen
     assert uncertain["safe_retry_available"] is False
     assert uncertain["no_send_action_definitely_occurred"] is False
     assert safe["safe_retry_available"] is False  # an uncertain peer blocks the shared protected run
-    assert client.post("/api/failed-targets/target-two/retry", json={}).status_code == 409
+    assert client.post("/api/modules/autody-test-center/failed-targets/target-two/retry", json={}).status_code == 409
     assert started == []
 
 

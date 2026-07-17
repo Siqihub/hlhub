@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   }),
   refreshAccountProfile: vi.fn(),
   checkRecovery: vi.fn().mockResolvedValue({ due: false, started: false }),
+  modules: vi.fn().mockResolvedValue({ modules: [{ id: "autody-test-center", installed: false }] }),
   messagePacks: vi.fn().mockResolvedValue({
     packs: [{ id: "daily", name: "日常问候", description: "自然短问候", version: "1.0.0", count: 50, category: "daily" }],
     source: "local",
@@ -49,6 +50,7 @@ vi.mock("./api", () => ({
     accountProfile: apiMocks.accountProfile,
     refreshAccountProfile: apiMocks.refreshAccountProfile,
     checkRecovery: apiMocks.checkRecovery,
+    modules: apiMocks.modules,
     messagePacks: apiMocks.messagePacks,
     preflightLatest: apiMocks.preflightLatest,
     preflightStatus: apiMocks.preflightStatus,
@@ -68,8 +70,8 @@ test("renders the primary dashboard status", async () => {
   expect(screen.getByText("已完成")).toBeInTheDocument();
   expect(screen.getAllByText("9/9")).toHaveLength(2);
   expect(screen.getByText("检查登录")).toBeInTheDocument();
-  expect(await screen.findByText("发送前自检")).toBeInTheDocument();
-  expect(await screen.findByText("具备条件：1")).toBeInTheDocument();
+  expect(screen.queryByText("发送前自检")).not.toBeInTheDocument();
+  expect(apiMocks.preflightStatus).not.toHaveBeenCalled();
 });
 
 test("keeps browser action buttons disabled until the action finishes", async () => {
@@ -90,14 +92,12 @@ test("keeps browser action buttons disabled until the action finishes", async ()
   await waitFor(() => expect(runButton).not.toBeDisabled());
 });
 
-test("starts a read-only preflight from the dashboard", async () => {
-  apiMocks.runPreflight.mockResolvedValue({ id: "preflight-1", action: "preflight", status: "running" });
+test("does not expose a preflight action from the normal dashboard", async () => {
   render(<App />);
 
-  fireEvent.click(await screen.findByRole("button", { name: "测试全部续火目标" }));
-
-  await waitFor(() => expect(apiMocks.runPreflight).toHaveBeenCalledWith());
-  expect(screen.getByText(/正在检测 0/)).toBeInTheDocument();
+  await screen.findByText("运行总览");
+  expect(screen.queryByRole("button", { name: "测试全部续火目标" })).not.toBeInTheDocument();
+  expect(apiMocks.runPreflight).not.toHaveBeenCalled();
 });
 
 test("opens the online message library from navigation", async () => {

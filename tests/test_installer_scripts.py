@@ -35,6 +35,9 @@ def test_installer_reuses_valid_environment_and_checks_native_stages():
     assert "Create virtual environment" in text
     assert "Invoke-NativeChecked -Stage \"Install editable package\"" in text
     assert "Invoke-NativeChecked -Stage \"Install Chromium\"" in text
+    assert "function Update-FrontendBuild" in text
+    assert "Source frontend production build" in text
+    assert "Stop-ProjectAutoDyService" in text
     assert "Get-ScheduledTask" in text
     assert "taskkill /IM python.exe" not in text
     assert "py -3.11 -m venv .venv" not in text

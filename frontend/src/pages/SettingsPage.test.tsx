@@ -10,7 +10,10 @@ vi.mock("../api", () => ({
       message_pack_index_url: null,
       daily_send_time: "07:30", recovery_deadline: "23:59", mask_log_friend_names: true
     }),
-    saveConfig: vi.fn()
+    saveConfig: vi.fn(),
+    modules: vi.fn().mockResolvedValue({ modules: [{ id: "autody-test-center", display_name: "测试中心", installed: false, version: null, compatible: true, bundled_available: true }] }),
+    installTestCenter: vi.fn().mockResolvedValue({ installed: true, version: "1.2.0" }),
+    uninstallTestCenter: vi.fn().mockResolvedValue({ installed: false })
   }
 }));
 
@@ -23,4 +26,17 @@ test("shows a live suffix preview for every style", async () => {
   fireEvent.change(screen.getByLabelText("后缀样式"), { target: { value: "bracket" } });
 
   expect(screen.getByText("你好【gpt小助手】")).toBeInTheDocument();
+});
+
+test("shows Test Center as an optional uninstalled module and installs it on request", async () => {
+  render(<SettingsPage notify={vi.fn()} />);
+
+  expect(await screen.findByRole("heading", { name: "可选模块" })).toBeInTheDocument();
+  expect(screen.getByText("测试中心")).toBeInTheDocument();
+  expect(screen.getByText(/未安装/)).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "安装测试中心" }));
+
+  const { api } = await import("../api");
+  expect(api.installTestCenter).toHaveBeenCalledOnce();
 });

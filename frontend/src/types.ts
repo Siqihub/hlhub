@@ -192,6 +192,16 @@ export interface PackCatalog {
   warning?: string | null;
 }
 
+export interface OptionalModuleStatus {
+  id: string;
+  display_name: string;
+  installed: boolean;
+  version: string | null;
+  compatible: boolean;
+  bundled_available?: boolean;
+  load_error?: string | null;
+}
+
 export interface PackPreview {
   pack: MessagePack;
   messages: string[];

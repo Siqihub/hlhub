@@ -1,7 +1,7 @@
 import { Save } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { AppConfig } from "../types";
+import type { AppConfig, OptionalModuleStatus } from "../types";
 
 function suffixPreview(config: AppConfig) {
   const text = config.message_suffix.text.trim();
@@ -12,9 +12,13 @@ function suffixPreview(config: AppConfig) {
   return `你好 ${text}`;
 }
 
-export function SettingsPage({ notify }: { notify: (message: string) => void }) {
+export function SettingsPage({ notify, onOpenTestCenter = () => undefined }: { notify: (message: string) => void; onOpenTestCenter?: () => void }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
-  useEffect(() => { void api.config().then(setConfig); }, []);
+  const [testCenter, setTestCenter] = useState<OptionalModuleStatus | null>(null);
+  useEffect(() => {
+    void api.config().then(setConfig);
+    void api.modules().then((result) => setTestCenter(result.modules.find((item) => item.id === "autody-test-center") ?? null));
+  }, []);
   if (!config) return <div className="loading">加载设置…</div>;
   const save = async () => {
     if (config.min_delay_seconds > config.max_delay_seconds) return notify("最小间隔不能大于最大间隔");
@@ -22,6 +26,21 @@ export function SettingsPage({ notify }: { notify: (message: string) => void }) 
     if (config.archive_log_retention_days < config.active_log_retention_days) return notify("归档日志保留天数不能小于活跃日志保留天数");
     try { setConfig(await api.saveConfig(config)); notify("运行设置已保存"); }
     catch (error) { notify(error instanceof Error ? error.message : "设置保存失败"); }
+  };
+  const installTestCenter = async (file?: File) => {
+    try {
+      const result = await api.installTestCenter(file);
+      setTestCenter(result);
+      notify("测试中心已安装，可从设置中打开。");
+    } catch (error) { notify(error instanceof Error ? error.message : "测试中心安装失败"); }
+  };
+  const uninstallTestCenter = async () => {
+    if (!window.confirm("卸载测试中心后，所有测试历史和测试模块设置将被永久删除。")) return;
+    try {
+      const result = await api.uninstallTestCenter();
+      setTestCenter(result);
+      notify("测试中心已卸载，模块数据已删除。");
+    } catch (error) { notify(error instanceof Error ? error.message : "测试中心卸载失败"); }
   };
   return (
     <section className="editor-page">
@@ -49,6 +68,10 @@ export function SettingsPage({ notify }: { notify: (message: string) => void }) 
         <label className="preview-setting"><span>发送预览<small>状态文件仍只记录“你好”基础文案</small></span><code>{suffixPreview(config)}</code></label>
         <label><span>GitHub 文案索引 URL<small>留空时使用内置文案包</small></span><input aria-label="GitHub 文案索引 URL" placeholder="https://raw.githubusercontent.com/.../index.json" value={config.message_pack_index_url || ""} onChange={(event) => setConfig({ ...config, message_pack_index_url: event.target.value || null })} /></label>
       </div>
+      <section className="panel">
+        <div className="panel-heading"><div><h2>可选模块</h2><small>官方模块默认不安装；卸载会永久删除模块自己的测试历史和设置。</small></div></div>
+        {testCenter ? <div className="module-row"><div><strong>{testCenter.display_name}</strong><small>{testCenter.installed ? `已安装 · ${testCenter.version || "未知版本"}` : "未安装 · 官方模块 1.0.0"}{testCenter.compatible ? " · 兼容当前 AutoDy" : " · 当前版本不兼容"}{testCenter.load_error ? ` · ${testCenter.load_error}` : ""}</small></div>{testCenter.installed ? <div className="inline-actions"><button className="action-button" onClick={onOpenTestCenter}>打开测试中心</button><label className="action-button">修复或重新安装<input aria-label="选择测试中心模块包" type="file" accept=".zip,.autody-module.zip" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void installTestCenter(file); event.currentTarget.value = ""; }} /></label><button className="action-button danger" onClick={() => void uninstallTestCenter()}>卸载测试中心</button></div> : <div className="inline-actions"><button className="action-button" disabled={!testCenter.compatible} onClick={() => void installTestCenter()}>安装测试中心</button><label className="action-button">选择官方 ZIP<input aria-label="选择测试中心模块包" type="file" accept=".zip,.autody-module.zip" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void installTestCenter(file); event.currentTarget.value = ""; }} /></label></div>}</div> : <div className="empty-state compact">正在读取可选模块状态…</div>}
+      </section>
     </section>
   );
 }
