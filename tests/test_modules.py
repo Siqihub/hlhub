@@ -1,4 +1,5 @@
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -34,6 +35,18 @@ def test_valid_official_package_installs_and_uninstalls_cleanly(tmp_path: Path):
     assert manager.uninstall() is True
     assert not module_root.exists()
     assert manager.status()["installed"] is False
+
+
+def test_test_center_package_uses_an_explicit_self_removal_dialog(tmp_path: Path):
+    package = build_module_archive(tmp_path / "AutoDy-Test-Center.autody-module.zip", version="1.0.0")
+
+    with zipfile.ZipFile(package) as archive:
+        module_js = archive.read("frontend/module.js").decode("utf-8")
+
+    assert 'id="remove-dialog"' in module_js
+    assert 'id="remove-cancel"' in module_js
+    assert 'id="remove-confirm"' in module_js
+    assert "confirm(warning)" not in module_js
 
 
 @pytest.mark.parametrize(

@@ -12,7 +12,7 @@ function suffixPreview(config: AppConfig) {
   return `你好 ${text}`;
 }
 
-export function SettingsPage({ notify, onOpenTestCenter = () => undefined }: { notify: (message: string) => void; onOpenTestCenter?: () => void }) {
+export function SettingsPage({ notify, onOpenTestCenter = () => undefined, onTestCenterStateChange = () => undefined }: { notify: (message: string) => void; onOpenTestCenter?: () => void; onTestCenterStateChange?: (installed: boolean) => void }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [testCenter, setTestCenter] = useState<OptionalModuleStatus | null>(null);
   useEffect(() => {
@@ -31,6 +31,7 @@ export function SettingsPage({ notify, onOpenTestCenter = () => undefined }: { n
     try {
       const result = await api.installTestCenter(file);
       setTestCenter(result);
+      onTestCenterStateChange(true);
       notify("测试中心已安装，可从设置中打开。");
     } catch (error) { notify(error instanceof Error ? error.message : "测试中心安装失败"); }
   };
@@ -39,6 +40,7 @@ export function SettingsPage({ notify, onOpenTestCenter = () => undefined }: { n
     try {
       const result = await api.uninstallTestCenter();
       setTestCenter(result);
+      onTestCenterStateChange(false);
       notify("测试中心已卸载，模块数据已删除。");
     } catch (error) { notify(error instanceof Error ? error.message : "测试中心卸载失败"); }
   };

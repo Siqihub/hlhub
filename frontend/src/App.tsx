@@ -90,7 +90,7 @@ export default function App() {
         {view === "scheduler" && <SchedulerPage status={status} notify={notify} onRefresh={load} />}
         {view === "logs" && <LogsPage summary={status.statistics.log_summary} />}
         {view === "backup" && <BackupPage notify={notify} />}
-        {view === "settings" && <SettingsPage notify={notify} onOpenTestCenter={() => setView("test-center")} />}
+        {view === "settings" && <SettingsPage notify={notify} onOpenTestCenter={() => setView("test-center")} onTestCenterStateChange={setTestCenterInstalled} />}
         {view === "test-center" && testCenterInstalled && <ModuleHostPage onRemoved={() => { setTestCenterInstalled(false); setView("settings"); }} />}
       </main>
       {toast && <div className="toast" role="status">{toast}</div>}

@@ -29,7 +29,8 @@ test("shows a live suffix preview for every style", async () => {
 });
 
 test("shows Test Center as an optional uninstalled module and installs it on request", async () => {
-  render(<SettingsPage notify={vi.fn()} />);
+  const onTestCenterStateChange = vi.fn();
+  render(<SettingsPage notify={vi.fn()} onTestCenterStateChange={onTestCenterStateChange} />);
 
   expect(await screen.findByRole("heading", { name: "可选模块" })).toBeInTheDocument();
   expect(screen.getByText("测试中心")).toBeInTheDocument();
@@ -39,4 +40,5 @@ test("shows Test Center as an optional uninstalled module and installs it on req
 
   const { api } = await import("../api");
   expect(api.installTestCenter).toHaveBeenCalledOnce();
+  expect(onTestCenterStateChange).toHaveBeenCalledWith(true);
 });

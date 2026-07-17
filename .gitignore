@@ -9,6 +9,7 @@ frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
 output/
+optional-modules/
 .tools/
 config.yaml
 messages.txt
